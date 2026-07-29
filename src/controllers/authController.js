@@ -4,7 +4,7 @@ import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { success } from '../utils/apiResponse.js';
 import { signToken } from '../utils/tokens.js';
-import { ALL_ROLES, normalizeRole } from '../constants/roles.js';
+import { ALL_ROLES, ROLES, normalizeRole } from '../constants/roles.js';
 import { logAudit } from '../services/auditService.js';
 import { notify } from '../services/notificationService.js';
 
@@ -41,6 +41,9 @@ const register = asyncHandler(async (req, res) => {
     password,
     phone,
     role,
+    // Candidates must finish CandidateSetup; other roles skip it
+    profileCompleted: role !== ROLES.CANDIDATE,
+    profileCompletedAt: role !== ROLES.CANDIDATE ? new Date() : undefined,
   });
 
   const token = signToken(user._id, user.role);
@@ -169,7 +172,9 @@ const getMe = asyncHandler(async (req, res) => {
     .populate('department', 'name code')
     .populate('branch', 'name code')
     .populate('manager', 'name email');
-  return success(res, 200, 'Profile fetched', { user });
+  return success(res, 200, 'Profile fetched', {
+    user: user.toSafeObject(),
+  });
 });
 
 const changePassword = asyncHandler(async (req, res) => {

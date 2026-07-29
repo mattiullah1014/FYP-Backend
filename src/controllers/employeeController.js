@@ -106,6 +106,8 @@ const createEmployee = asyncHandler(async (req, res) => {
     address,
     dateOfJoining,
     employeeId,
+    profileCompleted: true,
+    profileCompletedAt: new Date(),
   });
 
   await logAudit({

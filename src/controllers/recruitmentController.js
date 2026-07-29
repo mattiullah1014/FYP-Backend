@@ -205,6 +205,10 @@ const hireCandidate = asyncHandler(async (req, res) => {
   candidate.manager = req.body.manager;
   candidate.designation = req.body.designation;
   candidate.dateOfJoining = req.body.dateOfJoining || new Date();
+  candidate.profileCompleted = true;
+  if (!candidate.profileCompletedAt) {
+    candidate.profileCompletedAt = new Date();
+  }
   if (!candidate.employeeId) {
     candidate.employeeId = await generateEmployeeId();
   }

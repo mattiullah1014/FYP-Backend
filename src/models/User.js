@@ -42,6 +42,21 @@ const userSchema = new mongoose.Schema(
       url: String,
       publicId: String,
     },
+    // Candidate onboarding / application profile
+    education: String,
+    experience: String,
+    linkedin: String,
+    preferredLocation: String,
+    expectedSalary: String,
+    coverLetter: String,
+    skills: { type: [String], default: undefined },
+    resume: {
+      url: String,
+      publicId: String,
+      originalName: String,
+    },
+    profileCompleted: { type: Boolean, default: false },
+    profileCompletedAt: Date,
     employeeId: { type: String, unique: true, sparse: true },
     department: { type: mongoose.Schema.Types.ObjectId, ref: 'Department' },
     branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch' },
@@ -86,6 +101,10 @@ userSchema.methods.toSafeObject = function toSafeObject() {
   delete obj.resetPasswordExpire;
   delete obj.twoFactorToken;
   delete obj.twoFactorExpire;
+  // Legacy candidates created before this field existed
+  if (obj.role === ROLES.CANDIDATE && obj.profileCompleted == null) {
+    obj.profileCompleted = false;
+  }
   return obj;
 };
 
