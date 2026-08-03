@@ -42,6 +42,12 @@ const leaveRequestSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    /** Reviewing manager for this request (multi-manager support) */
+    manager: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      index: true,
+    },
     leaveType: { type: String, required: true },
     startDate: { type: Date, required: true },
     endDate: { type: Date, required: true },

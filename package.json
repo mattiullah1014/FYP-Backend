@@ -6,7 +6,13 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "nodemon src/server.js"
+    "dev": "nodemon src/server.js",
+    "tunnel": "node scripts/start-tunnel.mjs",
+    "dev:tunnel": "npx --yes concurrently -k -n api,tunnel -c blue,magenta \"npm run dev\" \"npm run tunnel\"",
+    "seed:jobs": "node scripts/seed-jobs.mjs",
+    "docs:recruitment": "node scripts/generate-recruitment-api-pdf.mjs",
+    "docs:manager-hr": "node scripts/generate-manager-employee-hr-api-pdf.mjs",
+    "docs:hr-employee": "node scripts/generate-hr-employee-api-pdf.mjs"
   },
   "engines": {
     "node": ">=22.0.0"

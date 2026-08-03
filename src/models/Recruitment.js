@@ -1,62 +1,8 @@
+/**
+ * Legacy interview feedback models (separate from Application.interview embed).
+ * Job / Application live in models/Job.js and models/Application.js.
+ */
 import mongoose from 'mongoose';
-
-const jobPostingSchema = new mongoose.Schema(
-  {
-    title: { type: String, required: true },
-    department: { type: mongoose.Schema.Types.ObjectId, ref: 'Department' },
-    branch: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch' },
-    description: { type: String, required: true },
-    requirements: [String],
-    employmentType: {
-      type: String,
-      enum: ['full-time', 'part-time', 'contract', 'internship'],
-      default: 'full-time',
-    },
-    location: String,
-    salaryRange: {
-      min: Number,
-      max: Number,
-      currency: { type: String, default: 'PKR' },
-    },
-    status: {
-      type: String,
-      enum: ['draft', 'active', 'closed'],
-      default: 'active',
-    },
-    postedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    closesAt: Date,
-  },
-  { timestamps: true }
-);
-
-const applicationSchema = new mongoose.Schema(
-  {
-    job: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'JobPosting',
-      required: true,
-    },
-    candidate: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      required: true,
-    },
-    coverLetter: String,
-    resume: {
-      url: String,
-      publicId: String,
-    },
-    status: {
-      type: String,
-      enum: ['applied', 'shortlisted', 'interview', 'hired', 'rejected'],
-      default: 'applied',
-    },
-    notes: String,
-  },
-  { timestamps: true }
-);
-
-applicationSchema.index({ job: 1, candidate: 1 }, { unique: true });
 
 const interviewSchema = new mongoose.Schema(
   {
@@ -68,8 +14,8 @@ const interviewSchema = new mongoose.Schema(
     scheduledAt: { type: Date, required: true },
     mode: {
       type: String,
-      enum: ['in-person', 'online', 'phone'],
-      default: 'in-person',
+      enum: ['in-person', 'online', 'phone', 'Onsite', 'Online'],
+      default: 'Onsite',
     },
     location: String,
     interviewers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
@@ -108,10 +54,13 @@ const interviewFeedbackSchema = new mongoose.Schema(
 
 interviewFeedbackSchema.index({ interview: 1, interviewer: 1 }, { unique: true });
 
-export const JobPosting = mongoose.model('JobPosting', jobPostingSchema);
-export const Application = mongoose.model('Application', applicationSchema);
 export const Interview = mongoose.model('Interview', interviewSchema);
 export const InterviewFeedback = mongoose.model(
   'InterviewFeedback',
   interviewFeedbackSchema
 );
+
+// Re-exports for any legacy imports
+export { default as Job } from './Job.js';
+export { default as Application } from './Application.js';
+export { default as JobPosting } from './Job.js';

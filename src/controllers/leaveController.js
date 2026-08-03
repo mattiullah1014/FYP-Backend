@@ -2,6 +2,7 @@ import { LeavePolicy,
   LeaveBalance,
   LeaveRequest, } from '../models/Leave.js';
 import User from '../models/User.js';
+import ManagerEmployeeAssignment from '../models/ManagerEmployeeAssignment.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { success } from '../utils/apiResponse.js';
@@ -17,6 +18,20 @@ const startOfDay = (d) => {
 const dayDiff = (start, end) => {
   const ms = startOfDay(end) - startOfDay(start);
   return Math.floor(ms / (1000 * 60 * 60 * 24)) + 1;
+};
+
+const mapLeaveType = (raw) => {
+  const s = String(raw || '').toLowerCase().trim();
+  if (['annual', 'sick', 'casual', 'unpaid', 'maternity', 'paternity', 'other'].includes(s)) {
+    return s;
+  }
+  if (s.includes('annual') || s.includes('paid leave')) return 'annual';
+  if (s.includes('sick')) return 'sick';
+  if (s.includes('personal') || s.includes('casual')) return 'casual';
+  if (s.includes('unpaid') || s.includes('lwp')) return 'unpaid';
+  if (s.includes('maternity')) return 'maternity';
+  if (s.includes('paternity')) return 'paternity';
+  return 'other';
 };
 
 const listPolicies = asyncHandler(async (req, res) => {
@@ -58,8 +73,14 @@ const allocateBalance = asyncHandler(async (req, res) => {
 });
 
 const requestLeave = asyncHandler(async (req, res) => {
-  const { leaveType, startDate, endDate, reason } = req.body;
-  const days = dayDiff(startDate, endDate);
+  const leaveType = mapLeaveType(req.body.leaveType || req.body.type);
+  const startDate = req.body.startDate || req.body.from;
+  const endDate = req.body.endDate || req.body.to;
+  const reason = String(req.body.reason || '').trim();
+  if (!startDate || !endDate || !reason) {
+    throw new ApiError(400, 'startDate, endDate and reason are required');
+  }
+  const days = req.body.days != null ? Number(req.body.days) : dayDiff(startDate, endDate);
   if (days < 1) throw new ApiError(400, 'Invalid date range');
 
   const leave = await LeaveRequest.create({
@@ -71,7 +92,7 @@ const requestLeave = asyncHandler(async (req, res) => {
     reason,
     status: 'pending',
     managerStatus: 'pending',
-    hrStatus: 'not-required',
+    hrStatus: 'pending',
   });
 
   const year = new Date(startDate).getFullYear();
@@ -99,8 +120,14 @@ const myLeaves = asyncHandler(async (req, res) => {
 const listLeaveRequests = asyncHandler(async (req, res) => {
   const filter = {};
   if (req.user.role === ROLES.MANAGER) {
-    const team = await User.find({ manager: req.user._id }).select('_id');
-    filter.employee = { $in: team.map((t) => t._id) };
+    const links = await ManagerEmployeeAssignment.find({
+      manager: req.user._id,
+    }).select('employee');
+    const teamIds = links.map((l) => l.employee);
+    filter.$or = [
+      { manager: req.user._id },
+      { employee: { $in: teamIds } },
+    ];
   }
   if (req.query.status) filter.status = req.query.status;
 
@@ -115,26 +142,33 @@ const reviewLeave = asyncHandler(async (req, res) => {
   if (!leave) throw new ApiError(404, 'Leave request not found');
   if (leave.status !== 'pending') throw new ApiError(400, 'Already reviewed');
 
-  const { decision, note, escalateToHr } = req.body;
+  const { decision, note } = req.body;
   if (!['approved', 'rejected'].includes(decision)) {
     throw new ApiError(400, 'decision must be approved or rejected');
   }
 
   if (req.user.role === ROLES.MANAGER) {
-    if (String(leave.employee.manager) !== String(req.user._id)) {
-      throw new ApiError(403, 'Not your team member');
+    const assigned =
+      String(leave.manager || '') === String(req.user._id) ||
+      String(leave.employee?.manager || '') === String(req.user._id);
+    if (!assigned) {
+      // also allow if ManagerEmployeeAssignment links them
+      const link = await ManagerEmployeeAssignment.findOne({
+        manager: req.user._id,
+        employee: leave.employee._id || leave.employee,
+      }).select('_id');
+      if (!link) throw new ApiError(403, 'Not your team member');
     }
     leave.managerStatus = decision;
-    if (escalateToHr && decision === 'approved') {
-      leave.hrStatus = 'pending';
-      leave.status = 'pending';
-    } else {
-      leave.status = decision;
-    }
+    leave.status = decision; // Manager can fully approve/reject
+    if (decision === 'approved') leave.hrStatus = 'not-required';
+    else leave.hrStatus = 'not-required';
   } else if (HR_ADMIN.includes(req.user.role)) {
     leave.hrStatus = decision;
-    leave.status = decision;
+    leave.status = decision; // HR can fully approve/reject
     if (leave.managerStatus === 'pending') leave.managerStatus = decision;
+  } else {
+    throw new ApiError(403, 'Not allowed');
   }
 
   leave.reviewedBy = req.user._id;
@@ -155,7 +189,9 @@ const reviewLeave = asyncHandler(async (req, res) => {
 
   await notify({
     to: leave.employee.email,
-    message: `Leave request ${leave.status}`,
+    channel: 'email',
+    subject: `Leave request ${leave.status}`,
+    message: `Your leave request was ${leave.status}.${note ? ` Remarks: ${note}` : ''}`,
   });
 
   return success(res, 200, `Leave ${leave.status}`, { leave });

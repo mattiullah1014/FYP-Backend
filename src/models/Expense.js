@@ -8,6 +8,12 @@ const expenseClaimSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    /** Reviewing manager for this claim */
+    manager: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      index: true,
+    },
     title: { type: String, required: true },
     category: {
       type: String,
@@ -22,6 +28,7 @@ const expenseClaimSchema = new mongoose.Schema(
       url: String,
       publicId: String,
     },
+    receiptUrl: String,
     status: {
       type: String,
       enum: ['pending', 'approved', 'rejected', 'reimbursed'],

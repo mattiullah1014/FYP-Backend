@@ -33,10 +33,20 @@ const performanceReviewSchema = new mongoose.Schema(
       required: true,
     },
     reviewer: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    /** Alias for manager portal (same as reviewer when manager creates) */
+    manager: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
     period: { type: String, required: true },
     selfAssessment: String,
     managerComments: String,
+    feedback: String,
     rating: { type: Number, min: 1, max: 5 },
+    kpis: [
+      {
+        name: String,
+        target: String,
+        actual: String,
+      },
+    ],
     promotionRecommendation: {
       type: String,
       enum: ['none', 'promote', 'demote'],

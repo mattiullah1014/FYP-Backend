@@ -23,8 +23,19 @@ const attendanceSchema = new mongoose.Schema(
     clockOutLocation: geoSchema,
     status: {
       type: String,
-      enum: ['present', 'absent', 'late', 'half-day', 'on-leave'],
+      enum: ['present', 'absent', 'late', 'half-day', 'on-leave', 'wfh'],
       default: 'present',
+    },
+    lateMinutes: { type: Number, default: 0 },
+    overtimeMinutes: { type: Number, default: 0 },
+    halfDayPending: { type: Boolean, default: false },
+    halfDayRequest: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'HalfDayRequest',
+    },
+    overtimeRequest: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'OvertimeRequest',
     },
     lateReason: String,
     earlyLeaveReason: String,

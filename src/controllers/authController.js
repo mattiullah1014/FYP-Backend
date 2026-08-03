@@ -22,10 +22,19 @@ const resolveRole = (raw) => {
 const hashOtp = (otp) =>
   crypto.createHash('sha256').update(String(otp)).digest('hex');
 
-/** Matches RN RoleSelection → SignUp: register under the selected role */
+/** Public signup: candidate | admin only. Staff (employee/manager/hr) are created by Admin/HR or hire conversion. */
+const PUBLIC_REGISTER_ROLES = [ROLES.CANDIDATE, ROLES.ADMIN];
+
 const register = asyncHandler(async (req, res) => {
   const { name, email, password, phone } = req.body;
   const role = resolveRole(req.body.role);
+
+  if (!PUBLIC_REGISTER_ROLES.includes(role)) {
+    throw new ApiError(
+      403,
+      'Public signup only allows candidate or admin. Employee, manager, and HR accounts are created by Admin/HR (or via hiring).'
+    );
+  }
 
   const exists = await User.findOne({ email: email.toLowerCase().trim() });
   if (exists) {
@@ -41,7 +50,7 @@ const register = asyncHandler(async (req, res) => {
     password,
     phone,
     role,
-    // Candidates must finish CandidateSetup; other roles skip it
+    // Candidates must finish CandidateSetup; admin skips it
     profileCompleted: role !== ROLES.CANDIDATE,
     profileCompletedAt: role !== ROLES.CANDIDATE ? new Date() : undefined,
   });
@@ -171,10 +180,55 @@ const getMe = asyncHandler(async (req, res) => {
   const user = await User.findById(req.user._id)
     .populate('department', 'name code')
     .populate('branch', 'name code')
-    .populate('manager', 'name email');
-  return success(res, 200, 'Profile fetched', {
+    .populate('manager', 'name email designation');
+
+  const payload = {
     user: user.toSafeObject(),
-  });
+  };
+
+  if (user.role === ROLES.MANAGER) {
+    const ManagerProfile = (await import('../models/ManagerProfile.js')).default;
+    let profile = await ManagerProfile.findOne({ user: user._id });
+    if (!profile) {
+      profile = await ManagerProfile.create({
+        user: user._id,
+        title: user.designation || 'Manager',
+        status: user.isActive === false ? 'inactive' : 'active',
+      });
+    }
+    payload.permissions = profile.permissions;
+    payload.managerProfile = profile;
+  }
+
+  if (user.role === ROLES.EMPLOYEE || user.role === ROLES.MANAGER) {
+    const {
+      syncProfileCompletionFromUser,
+      getOrCreateProfileCompletion,
+      profileCompletionSummary,
+    } = await import('../utils/profileCompletion.js');
+    await syncProfileCompletionFromUser(user._id);
+    const completion = await getOrCreateProfileCompletion(user._id);
+    payload.profileCompletion = profileCompletionSummary(completion);
+  }
+
+  if (user.role === ROLES.EMPLOYEE) {
+    const ManagerEmployeeAssignment = (
+      await import('../models/ManagerEmployeeAssignment.js')
+    ).default;
+    const links = await ManagerEmployeeAssignment.find({
+      employee: user._id,
+    }).populate('manager', 'name email designation department');
+    payload.managers = links.map((l) => ({
+      id: l.manager?._id,
+      name: l.manager?.name,
+      email: l.manager?.email,
+      designation: l.manager?.designation,
+      department: l.manager?.department,
+      relationshipType: l.relationshipType,
+    }));
+  }
+
+  return success(res, 200, 'Profile fetched', payload);
 });
 
 const changePassword = asyncHandler(async (req, res) => {

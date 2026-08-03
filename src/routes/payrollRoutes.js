@@ -15,6 +15,15 @@ router.get(
 router.post('/run', authorize(...HR_ADMIN), payrollController.runPayroll);
 router.get('/runs', authorize(...HR_ADMIN), payrollController.listPayrollRuns);
 router.get('/payslips/me', authorize(...STAFF_ROLES), payrollController.myPayslips);
-router.get('/payslips/:id', authorize(...STAFF_ROLES, ...HR_ADMIN), payrollController.getPayslip);
+router.get(
+  '/payslips/:id/pdf',
+  authorize(...STAFF_ROLES, ...HR_ADMIN),
+  payrollController.downloadPayslipPdf
+);
+router.get(
+  '/payslips/:id',
+  authorize(...STAFF_ROLES, ...HR_ADMIN),
+  payrollController.getPayslip
+);
 
 export default router;

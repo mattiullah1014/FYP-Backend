@@ -74,6 +74,39 @@ const payslipSchema = new mongoose.Schema(
 
 payslipSchema.index({ employee: 1, month: 1, year: 1 }, { unique: true });
 
-export const SalaryStructure = mongoose.model('SalaryStructure', salaryStructureSchema);
+/** Manual HR bonus / deduction for a payroll month */
+const payrollAdjustmentSchema = new mongoose.Schema(
+  {
+    employee: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+      index: true,
+    },
+    empId: String,
+    month: { type: Number, required: true, min: 1, max: 12 },
+    year: { type: Number, required: true },
+    type: {
+      type: String,
+      enum: ['bonus', 'deduction'],
+      required: true,
+    },
+    amount: { type: Number, required: true, min: 0 },
+    note: { type: String, default: '' },
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  },
+  { timestamps: true }
+);
+
+payrollAdjustmentSchema.index({ employee: 1, month: 1, year: 1, type: 1 });
+
+export const SalaryStructure = mongoose.model(
+  'SalaryStructure',
+  salaryStructureSchema
+);
 export const PayrollRun = mongoose.model('PayrollRun', payrollRunSchema);
 export const Payslip = mongoose.model('Payslip', payslipSchema);
+export const PayrollAdjustment = mongoose.model(
+  'PayrollAdjustment',
+  payrollAdjustmentSchema
+);

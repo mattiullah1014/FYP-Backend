@@ -10,6 +10,11 @@ const announcementSchema = new mongoose.Schema(
       default: 'all',
     },
     department: { type: mongoose.Schema.Types.ObjectId, ref: 'Department' },
+    manager: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      index: true,
+    },
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
@@ -33,7 +38,13 @@ const messageSchema = new mongoose.Schema(
       required: true,
     },
     subject: String,
+    title: String,
     body: { type: String, required: true },
+    type: {
+      type: String,
+      enum: ['announcement', 'task', 'approval', 'system', 'direct'],
+      default: 'direct',
+    },
     isRead: { type: Boolean, default: false },
     readAt: Date,
   },
