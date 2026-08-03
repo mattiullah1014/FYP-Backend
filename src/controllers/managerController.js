@@ -2,15 +2,23 @@ import User from '../models/User.js';
 import ManagerEmployeeAssignment from '../models/ManagerEmployeeAssignment.js';
 import Task from '../models/Task.js';
 import OvertimeRequest from '../models/OvertimeRequest.js';
+import Attendance from '../models/Attendance.js';
 import { LeaveRequest } from '../models/Leave.js';
 import ExpenseClaim from '../models/Expense.js';
 import { PerformanceReview } from '../models/Performance.js';
 import { Announcement, Message } from '../models/Communication.js';
+import { WfhRequest } from '../models/AttendanceRequest.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { success } from '../utils/apiResponse.js';
 import { ROLES } from '../constants/roles.js';
 import { assertTeamMember } from '../middleware/managerAuth.js';
+import { notify } from '../services/notificationService.js';
+import {
+  notifyApproversOnSubmit,
+  notifyRequesterOnDecision,
+  notifyHrAdmin,
+} from '../utils/approvalNotify.js';
 import {
   getOrCreateProfileCompletion,
   profileCompletionSummary,
@@ -22,13 +30,174 @@ import {
   listCorrectionsForManager,
   reviewCorrectionManager,
 } from './attendanceRequestController.js';
+import {
+  buildFullEmployeeDto,
+  loadManagersForUser,
+  resolveEmployee,
+  toHrEmployeeDto,
+} from '../utils/hrEmployeeHelpers.js';
 
-const teamEmployeeIds = async (managerId) => {
+const startOfDay = (d = new Date()) => {
+  const date = new Date(d);
+  date.setHours(0, 0, 0, 0);
+  return date;
+};
+
+const endOfDay = (d = new Date()) => {
+  const date = startOfDay(d);
+  date.setHours(23, 59, 59, 999);
+  return date;
+};
+
+const teamEmployeeIds = async (managerId, { orgWide = false } = {}) => {
+  if (orgWide) {
+    const users = await User.find({
+      role: { $in: [ROLES.EMPLOYEE, ROLES.MANAGER] },
+      isDeleted: false,
+    }).select('_id');
+    return users.map((u) => u._id);
+  }
   const links = await ManagerEmployeeAssignment.find({ manager: managerId }).select(
     'employee'
   );
   return links.map((l) => l.employee);
 };
+
+/**
+ * Live today attendance snapshot for a manager's team (Attendance + Leave + WFH).
+ */
+const teamAttendanceSnapshot = async (
+  managerId,
+  forDate = new Date(),
+  { orgWide = false } = {}
+) => {
+  const ids = await teamEmployeeIds(managerId, { orgWide });
+  const teamSize = ids.length;
+  const day = startOfDay(forDate);
+  const end = endOfDay(forDate);
+  const dateStr = day.toISOString().slice(0, 10);
+
+  const empty = {
+    date: dateStr,
+    teamSize,
+    present: 0,
+    late: 0,
+    halfDay: 0,
+    wfh: 0,
+    onLeave: 0,
+    absent: 0,
+    presentToday: 0,
+    clockedIn: 0,
+    stillOnDuty: 0,
+  };
+
+  if (!teamSize) return empty;
+
+  const [attendanceRows, leaves, wfhRows] = await Promise.all([
+    Attendance.find({ employee: { $in: ids }, date: day }).lean(),
+    LeaveRequest.find({
+      employee: { $in: ids },
+      status: 'approved',
+      startDate: { $lte: end },
+      endDate: { $gte: day },
+    })
+      .select('employee')
+      .lean(),
+    WfhRequest.find({
+      employee: { $in: ids },
+      status: 'approved',
+      date: { $gte: day, $lte: end },
+    })
+      .select('employee')
+      .lean(),
+  ]);
+
+  const attByUser = new Map(
+    attendanceRows.map((a) => [String(a.employee), a]),
+  );
+  const leaveSet = new Set(leaves.map((l) => String(l.employee)));
+  const wfhSet = new Set(wfhRows.map((w) => String(w.employee)));
+
+  let present = 0;
+  let late = 0;
+  let halfDay = 0;
+  let wfh = 0;
+  let onLeave = 0;
+  let absent = 0;
+  let clockedIn = 0;
+  let stillOnDuty = 0;
+
+  for (const id of ids) {
+    const uid = String(id);
+    const att = attByUser.get(uid);
+    const status = String(att?.status || '').toLowerCase();
+
+    if (att?.clockIn) {
+      clockedIn += 1;
+      if (!att.clockOut) stillOnDuty += 1;
+
+      if (status === 'half-day' || att.halfDayPending) {
+        halfDay += 1;
+      } else if (status === 'late') {
+        late += 1;
+      } else if (status === 'wfh') {
+        wfh += 1;
+      } else if (status === 'on-leave') {
+        onLeave += 1;
+      } else {
+        present += 1;
+      }
+    } else if (leaveSet.has(uid)) {
+      onLeave += 1;
+    } else if (wfhSet.has(uid)) {
+      wfh += 1;
+    } else {
+      absent += 1;
+    }
+  }
+
+  return {
+    date: dateStr,
+    teamSize,
+    present,
+    late,
+    halfDay,
+    wfh,
+    onLeave,
+    absent,
+    // Working / accounted today (not absent / not on leave)
+    presentToday: present + late + halfDay + wfh,
+    clockedIn,
+    stillOnDuty,
+  };
+};
+
+const countPendingApprovals = async (managerId, { orgWide = false } = {}) => {
+  if (orgWide) {
+    const [pendingLeave, pendingOt, pendingExp, pendingWfh] = await Promise.all([
+      LeaveRequest.countDocuments({ status: 'pending' }),
+      OvertimeRequest.countDocuments({ status: 'pending' }),
+      ExpenseClaim.countDocuments({ status: 'pending' }),
+      WfhRequest.countDocuments({
+        status: { $in: ['pending', 'pending_manager', 'pending_hr'] },
+      }),
+    ]);
+    return pendingLeave + pendingOt + pendingExp + pendingWfh;
+  }
+  const [pendingLeave, pendingOt, pendingExp, pendingWfh] = await Promise.all([
+    LeaveRequest.countDocuments({ manager: managerId, status: 'pending' }),
+    OvertimeRequest.countDocuments({ manager: managerId, status: 'pending' }),
+    ExpenseClaim.countDocuments({ manager: managerId, status: 'pending' }),
+    WfhRequest.countDocuments({
+      manager: managerId,
+      status: { $in: ['pending', 'pending_manager', 'pending_hr'] },
+    }),
+  ]);
+  return pendingLeave + pendingOt + pendingExp + pendingWfh;
+};
+
+const isOrgWideAdmin = (req) =>
+  Boolean(req.isAdminManagerBypass || req.user?.role === ROLES.ADMIN);
 
 // --- Team ---
 const getTeam = asyncHandler(async (req, res) => {
@@ -46,6 +215,61 @@ const getTeam = asyncHandler(async (req, res) => {
   }));
 
   return success(res, 200, 'Team fetched', { team, teamSize: team.length });
+});
+
+/** GET /manager/team/:employeeId — full profile for a team member (read-only) */
+const getTeamMember = asyncHandler(async (req, res) => {
+  const employeeId = req.params.employeeId;
+  await assertTeamMember(req.user._id, employeeId, {
+    isAdmin: req.isAdminManagerBypass,
+  });
+
+  const employee = await resolveEmployee(employeeId);
+  if (employee) {
+    const dto = await buildFullEmployeeDto(employee);
+    return success(res, 200, 'Team member fetched', { employee: dto });
+  }
+
+  // Fallback when Employee HR record is missing but User exists on team
+  const user = await User.findOne({
+    _id: employeeId,
+    role: ROLES.EMPLOYEE,
+    isDeleted: false,
+  })
+    .populate('department', 'name code')
+    .populate('branch', 'name code')
+    .populate('manager', 'name email employeeId');
+
+  if (!user) throw new ApiError(404, 'Employee not found');
+
+  const managers = await loadManagersForUser(user._id);
+  const dto = toHrEmployeeDto(
+    {
+      _id: user._id,
+      name: user.name,
+      empId: user.employeeId,
+      email: user.email,
+      phone: user.phone,
+      designation: user.designation,
+      department: user.department?.name || user.department,
+      branch: user.branch?.name || user.branch,
+      joinedAt: user.dateOfJoining,
+      salary: user.salary ?? null,
+      address: user.address,
+      emergencyContact: Array.isArray(user.emergencyContacts)
+        ? user.emergencyContacts[0]
+        : undefined,
+      bank: user.bank,
+      documents: user.documents || [],
+      assets: [],
+      status: user.isActive === false ? 'Inactive' : 'Active',
+      user: user._id,
+      role: 'Employee',
+    },
+    { user, managers },
+  );
+
+  return success(res, 200, 'Team member fetched', { employee: dto });
 });
 
 const addTeamMember = asyncHandler(async (req, res) => {
@@ -132,7 +356,9 @@ const listTasks = asyncHandler(async (req, res) => {
 
 const createTask = asyncHandler(async (req, res) => {
   const assigneeId = req.body.assigneeId || req.body.assignee;
-  await assertTeamMember(req.user._id, assigneeId);
+  await assertTeamMember(req.user._id, assigneeId, {
+    isAdmin: req.isAdminManagerBypass,
+  });
 
   const task = await Task.create({
     title: req.body.title,
@@ -167,7 +393,9 @@ const updateTask = asyncHandler(async (req, res) => {
     if (req.body[k] !== undefined) task[k] = req.body[k];
   });
   if (req.body.assigneeId) {
-    await assertTeamMember(req.user._id, req.body.assigneeId);
+    await assertTeamMember(req.user._id, req.body.assigneeId, {
+      isAdmin: req.isAdminManagerBypass,
+    });
     task.assignee = req.body.assigneeId;
   }
   await task.save();
@@ -272,7 +500,17 @@ const reviewApproval = asyncHandler(async (req, res) => {
       title: `leave ${status}`,
       body: req.body.note || `Your leave request was ${status}`,
       type: 'approval',
-    });
+    }).catch(() => null);
+
+    await notifyRequesterOnDecision({
+      to: leave.employee?.email,
+      userId: leave.employee?._id || leave.employee,
+      title: `Leave request ${status}`,
+      message: `Your leave request was ${status}.${
+        req.body.note ? ` Remarks: ${req.body.note}` : ''
+      }`,
+      decision: status,
+    }).catch(() => null);
 
     return success(res, 200, `leave ${status}`, { item: leave });
   }
@@ -318,21 +556,60 @@ const listReviews = asyncHandler(async (req, res) => {
 
 const createReview = asyncHandler(async (req, res) => {
   const employeeId = req.body.employeeId || req.body.employee;
-  await assertTeamMember(req.user._id, employeeId);
+  await assertTeamMember(req.user._id, employeeId, {
+    isAdmin: req.isAdminManagerBypass,
+  });
+
+  const period = String(req.body.period || '').trim();
+  if (!period) throw new ApiError(400, 'period is required');
+
+  const rating = Number(req.body.rating);
+  if (!rating || rating < 1 || rating > 5) {
+    throw new ApiError(400, 'rating must be between 1 and 5');
+  }
+
+  const feedback = String(req.body.feedback || req.body.managerComments || '').trim();
+  if (feedback.length < 10) {
+    throw new ApiError(400, 'feedback must be at least 10 characters');
+  }
 
   const review = await PerformanceReview.create({
     employee: employeeId,
     manager: req.user._id,
     reviewer: req.user._id,
-    period: req.body.period,
-    rating: req.body.rating,
-    feedback: req.body.feedback,
-    managerComments: req.body.feedback || req.body.managerComments,
-    kpis: req.body.kpis || [],
-    status: 'completed',
+    period,
+    rating,
+    feedback,
+    managerComments: feedback,
+    kpis: Array.isArray(req.body.kpis) ? req.body.kpis : [],
+    // Manager done → waiting for HR/Admin final review
+    status: 'pending_hr',
   });
 
-  return success(res, 201, 'Review created', { review });
+  const populated = await PerformanceReview.findById(review._id)
+    .populate('employee', 'name email employeeId')
+    .populate('manager', 'name email');
+
+  const empEmail = populated?.employee?.email;
+  if (empEmail) {
+    await notify({
+      to: empEmail,
+      userId: populated?.employee?._id,
+      channel: 'email',
+      subject: `Performance review — ${period}`,
+      message: `New performance review for ${period}: ${rating}/5 from your manager (pending HR finalization).`,
+      type: 'info',
+    });
+  }
+
+  await notifyHrAdmin({
+    senderId: req.user._id,
+    title: 'Performance review pending HR',
+    message: `${populated?.employee?.name || 'Employee'} — ${period} review (${rating}/5) awaits HR finalization by ${req.user.name}.`,
+    type: 'info',
+  });
+
+  return success(res, 201, 'Review created', { review: populated });
 });
 
 const getAppraisal = asyncHandler(async (req, res) => {
@@ -387,7 +664,9 @@ const listAnnouncements = asyncHandler(async (req, res) => {
 
 const sendMessage = asyncHandler(async (req, res) => {
   const toEmployeeId = req.body.toEmployeeId || req.body.recipientId;
-  await assertTeamMember(req.user._id, toEmployeeId);
+  await assertTeamMember(req.user._id, toEmployeeId, {
+    isAdmin: req.isAdminManagerBypass,
+  });
 
   const message = await Message.create({
     sender: req.user._id,
@@ -400,56 +679,76 @@ const sendMessage = asyncHandler(async (req, res) => {
   return success(res, 201, 'Message sent', { message });
 });
 
-// --- Reports (mockable aggregates) ---
+// --- Reports (live aggregates from team data) ---
 const reportOverview = asyncHandler(async (req, res) => {
-  const ids = await teamEmployeeIds(req.user._id);
-  const [pendingLeave, pendingOt, pendingExp, openTasks] = await Promise.all([
-    LeaveRequest.countDocuments({ manager: req.user._id, status: 'pending' }),
-    OvertimeRequest.countDocuments({ manager: req.user._id, status: 'pending' }),
-    ExpenseClaim.countDocuments({ manager: req.user._id, status: 'pending' }),
-    Task.countDocuments({
-      manager: req.user._id,
-      isDeleted: false,
-      status: { $ne: 'completed' },
-    }),
+  const orgWide = isOrgWideAdmin(req);
+  const taskFilter = orgWide
+    ? { isDeleted: false }
+    : { manager: req.user._id, isDeleted: false };
+  const [att, pendingApprovals, openTasks, tasksTotal] = await Promise.all([
+    teamAttendanceSnapshot(req.user._id, new Date(), { orgWide }),
+    countPendingApprovals(req.user._id, { orgWide }),
+    Task.countDocuments({ ...taskFilter, status: { $ne: 'completed' } }),
+    Task.countDocuments(taskFilter),
   ]);
 
   return success(res, 200, 'Overview report', {
     report: {
-      teamSize: ids.length,
-      pendingApprovals: pendingLeave + pendingOt + pendingExp,
+      date: att.date,
+      teamSize: att.teamSize,
+      pendingApprovals,
       openTasks,
-      presentToday: Math.max(0, ids.length - 1),
+      tasksTotal,
+      presentToday: att.presentToday,
+      absentToday: att.absent,
+      onLeaveToday: att.onLeave,
+      lateToday: att.late,
     },
   });
 });
 
 const reportAttendance = asyncHandler(async (req, res) => {
-  const ids = await teamEmployeeIds(req.user._id);
+  const orgWide = isOrgWideAdmin(req);
+  const day = req.query.date ? new Date(req.query.date) : new Date();
+  const att = await teamAttendanceSnapshot(req.user._id, day, { orgWide });
+  const attendanceRate = att.teamSize
+    ? Math.round((att.presentToday / att.teamSize) * 100)
+    : 0;
+
   return success(res, 200, 'Attendance report', {
     report: {
-      teamSize: ids.length,
-      present: Math.max(0, ids.length - 1),
-      absent: Math.min(1, ids.length),
-      late: 0,
-      note: 'Wire to Attendance collection for live calc',
+      date: att.date,
+      teamSize: att.teamSize,
+      present: att.present,
+      late: att.late,
+      halfDay: att.halfDay,
+      wfh: att.wfh,
+      onLeave: att.onLeave,
+      absent: att.absent,
+      presentToday: att.presentToday,
+      clockedIn: att.clockedIn,
+      stillOnDuty: att.stillOnDuty,
+      attendanceRate,
     },
   });
 });
 
 const reportProductivity = asyncHandler(async (req, res) => {
-  const completed = await Task.countDocuments({
-    manager: req.user._id,
-    status: 'completed',
-    isDeleted: false,
-  });
-  const total = await Task.countDocuments({
-    manager: req.user._id,
-    isDeleted: false,
-  });
+  const orgWide = isOrgWideAdmin(req);
+  const base = orgWide
+    ? { isDeleted: false }
+    : { manager: req.user._id, isDeleted: false };
+  const [completed, inProgress, pending, total] = await Promise.all([
+    Task.countDocuments({ ...base, status: 'completed' }),
+    Task.countDocuments({ ...base, status: 'in_progress' }),
+    Task.countDocuments({ ...base, status: 'pending' }),
+    Task.countDocuments(base),
+  ]);
   return success(res, 200, 'Productivity report', {
     report: {
       tasksCompleted: completed,
+      tasksInProgress: inProgress,
+      tasksPending: pending,
       tasksTotal: total,
       completionRate: total ? Math.round((completed / total) * 100) : 0,
     },
@@ -457,16 +756,22 @@ const reportProductivity = asyncHandler(async (req, res) => {
 });
 
 const reportPerformance = asyncHandler(async (req, res) => {
-  const reviews = await PerformanceReview.find({
-    $or: [{ manager: req.user._id }, { reviewer: req.user._id }],
-  }).select('rating period employee');
+  const orgWide = isOrgWideAdmin(req);
+  const filter = orgWide
+    ? {}
+    : { $or: [{ manager: req.user._id }, { reviewer: req.user._id }] };
+  const reviews = await PerformanceReview.find(filter).select(
+    'rating period employee'
+  );
+  const rated = reviews.filter((r) => typeof r.rating === 'number' && r.rating > 0);
   const avg =
-    reviews.length === 0
+    rated.length === 0
       ? 0
-      : reviews.reduce((s, r) => s + (r.rating || 0), 0) / reviews.length;
+      : rated.reduce((s, r) => s + (r.rating || 0), 0) / rated.length;
   return success(res, 200, 'Performance report', {
     report: {
       reviewsCount: reviews.length,
+      ratedCount: rated.length,
       averageRating: Number(avg.toFixed(2)),
     },
   });
@@ -474,16 +779,14 @@ const reportPerformance = asyncHandler(async (req, res) => {
 
 // --- Dashboard ---
 const dashboard = asyncHandler(async (req, res) => {
-  const ids = await teamEmployeeIds(req.user._id);
-  const [pendingLeave, pendingOt, pendingExp, openTasks] = await Promise.all([
-    LeaveRequest.countDocuments({ manager: req.user._id, status: 'pending' }),
-    OvertimeRequest.countDocuments({ manager: req.user._id, status: 'pending' }),
-    ExpenseClaim.countDocuments({ manager: req.user._id, status: 'pending' }),
-    Task.countDocuments({
-      manager: req.user._id,
-      isDeleted: false,
-      status: { $ne: 'completed' },
-    }),
+  const orgWide = isOrgWideAdmin(req);
+  const taskFilter = orgWide
+    ? { isDeleted: false, status: { $ne: 'completed' } }
+    : { manager: req.user._id, isDeleted: false, status: { $ne: 'completed' } };
+  const [att, pendingApprovals, openTasks] = await Promise.all([
+    teamAttendanceSnapshot(req.user._id, new Date(), { orgWide }),
+    countPendingApprovals(req.user._id, { orgWide }),
+    Task.countDocuments(taskFilter),
   ]);
 
   await syncProfileCompletionFromUser(req.user._id);
@@ -491,18 +794,22 @@ const dashboard = asyncHandler(async (req, res) => {
 
   return success(res, 200, 'Manager dashboard', {
     dashboard: {
-      teamSize: ids.length,
-      presentToday: Math.max(0, ids.length - 1),
-      pendingApprovals: pendingLeave + pendingOt + pendingExp,
+      teamSize: att.teamSize,
+      presentToday: att.presentToday,
+      absentToday: att.absent,
+      lateToday: att.late,
+      onLeaveToday: att.onLeave,
+      pendingApprovals,
       openTasks,
       profileCompletion: profileCompletionSummary(completion),
       permissions: req.managerProfile.permissions,
+      attendanceDate: att.date,
     },
   });
 });
-
 export {
   getTeam,
+  getTeamMember,
   addTeamMember,
   removeTeamMember,
   availableEmployees,

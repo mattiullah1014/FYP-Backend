@@ -52,9 +52,15 @@ const performanceReviewSchema = new mongoose.Schema(
       enum: ['none', 'promote', 'demote'],
       default: 'none',
     },
+    /** HR final review fields */
+    hrReview: { type: String, default: '' },
+    overallRating: { type: Number, min: 1, max: 5 },
+    trainingRecommendation: { type: String, default: '' },
+    hrReviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    hrReviewedAt: Date,
     status: {
       type: String,
-      enum: ['draft', 'submitted', 'completed'],
+      enum: ['draft', 'submitted', 'pending_hr', 'completed'],
       default: 'draft',
     },
   },

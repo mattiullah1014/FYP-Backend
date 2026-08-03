@@ -1,13 +1,15 @@
 import { LeavePolicy,
   LeaveBalance,
   LeaveRequest, } from '../models/Leave.js';
-import User from '../models/User.js';
 import ManagerEmployeeAssignment from '../models/ManagerEmployeeAssignment.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { success } from '../utils/apiResponse.js';
 import { ROLES, HR_ADMIN } from '../constants/roles.js';
-import { notify } from '../services/notificationService.js';
+import {
+  notifyApproversOnSubmit,
+  notifyRequesterOnDecision,
+} from '../utils/approvalNotify.js';
 
 const startOfDay = (d) => {
   const date = new Date(d);
@@ -102,10 +104,23 @@ const requestLeave = asyncHandler(async (req, res) => {
     { upsert: true }
   );
 
-  await notify({
-    to: req.user.email,
-    message: `Leave request submitted (${days} day(s))`,
+  await notifyApproversOnSubmit({
+    employeeId: req.user._id,
+    senderId: req.user._id,
+    title: 'Leave request',
+    message: `${req.user.name} requested ${leaveType} leave (${days} day(s))`,
+    includeManagers: true,
+    includeHrAdmin: true,
   });
+
+  await notifyRequesterOnDecision({
+    to: req.user.email,
+    userId: req.user._id,
+    title: 'Leave request submitted',
+    message: `Your leave request (${days} day(s)) was submitted and is pending approval.`,
+    decision: 'submitted',
+    type: 'info',
+  }).catch(() => null);
 
   return success(res, 201, 'Leave requested', { leave });
 });
@@ -187,11 +202,12 @@ const reviewLeave = asyncHandler(async (req, res) => {
     await balance.save();
   }
 
-  await notify({
+  await notifyRequesterOnDecision({
     to: leave.employee.email,
-    channel: 'email',
-    subject: `Leave request ${leave.status}`,
+    userId: leave.employee._id || leave.employee,
+    title: `Leave request ${leave.status}`,
     message: `Your leave request was ${leave.status}.${note ? ` Remarks: ${note}` : ''}`,
+    decision: leave.status,
   });
 
   return success(res, 200, `Leave ${leave.status}`, { leave });

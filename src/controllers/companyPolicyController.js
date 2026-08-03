@@ -60,10 +60,12 @@ const emailActiveEmployeesPolicyUpdate = async (policy) => {
         .map((u) =>
           notify({
             to: u.email,
+            userId: u._id,
             channel: 'email',
             subject,
             message,
             html,
+            type: 'info',
           })
         )
     );

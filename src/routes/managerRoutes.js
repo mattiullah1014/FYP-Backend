@@ -12,13 +12,14 @@ import { ROLES } from '../constants/roles.js';
 const router = express.Router();
 
 router.use(protect);
-router.use(authorize(ROLES.MANAGER));
+router.use(authorize(ROLES.MANAGER, ROLES.ADMIN));
 router.use(loadManagerProfile);
 
 router.get('/dashboard', managerController.dashboard);
 
 // Team
 router.get('/team', managerController.getTeam);
+router.get('/team/:employeeId', managerController.getTeamMember);
 router.post(
   '/team',
   requireManagerPermission('teamManagement'),

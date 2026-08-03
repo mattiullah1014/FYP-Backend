@@ -101,10 +101,12 @@ const login = asyncHandler(async (req, res) => {
 
     await notify({
       to: user.email,
+      userId: user._id,
       channel: 'email',
       subject: 'Brilliance login verification code',
       message: `Your Brilliance 2FA login OTP is ${otp}. It expires in 10 minutes.`,
       html: `<p>Your Brilliance <strong>2FA login OTP</strong> is <strong style="font-size:20px;letter-spacing:4px">${otp}</strong>.</p><p>It expires in 10 minutes. If you did not try to log in, ignore this email.</p>`,
+      skipInApp: true,
     });
 
     const payload = {
@@ -261,10 +263,12 @@ const forgotPassword = asyncHandler(async (req, res) => {
 
   await notify({
     to: user.email,
+    userId: user._id,
     channel: 'email',
     subject: 'Password reset OTP',
     message: `Your Brilliance password reset OTP is ${otp}. It expires in 10 minutes.`,
     html: `<p>Your Brilliance <strong>password reset OTP</strong> is <strong style="font-size:20px;letter-spacing:4px">${otp}</strong>.</p><p>It expires in 10 minutes. If you did not request this, ignore this email.</p>`,
+    skipInApp: true,
   });
 
   const payload =
@@ -322,11 +326,13 @@ const resetPassword = asyncHandler(async (req, res) => {
 
   await notify({
     to: user.email,
+    userId: user._id,
     channel: 'email',
     subject: 'Password reset successful',
     message:
       'Your Brilliance account password was reset successfully. If this was not you, contact support immediately.',
     html: `<p>Your Brilliance account password was <strong>reset successfully</strong>.</p><p>If this was not you, contact support immediately.</p>`,
+    type: 'success',
   });
 
   return success(res, 200, 'Password reset successful');
@@ -357,6 +363,7 @@ const toggle2FA = asyncHandler(async (req, res) => {
 
   await notify({
     to: user.email,
+    userId: user._id,
     channel: 'email',
     subject: enabled
       ? 'Two-factor authentication enabled'
@@ -367,6 +374,7 @@ const toggle2FA = asyncHandler(async (req, res) => {
     html: enabled
       ? `<p>Email <strong>2FA is now enabled</strong> on your Brilliance account.</p><p>You will receive a login OTP each time you sign in.</p>`
       : `<p>Email <strong>2FA has been disabled</strong> on your Brilliance account.</p>`,
+    type: 'info',
   });
 
   return success(res, 200, '2FA setting updated', {

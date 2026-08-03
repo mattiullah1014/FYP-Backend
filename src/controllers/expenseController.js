@@ -4,7 +4,10 @@ import asyncHandler from '../utils/asyncHandler.js';
 import { success } from '../utils/apiResponse.js';
 import { uploadToCloudinary } from '../config/cloudinary.stub.js';
 import { HR_ADMIN } from '../constants/roles.js';
-import { notify } from '../services/notificationService.js';
+import {
+  notifyApproversOnSubmit,
+  notifyRequesterOnDecision,
+} from '../utils/approvalNotify.js';
 
 const HIGH_VALUE_THRESHOLD = 50000;
 
@@ -52,6 +55,15 @@ const createClaim = asyncHandler(async (req, res) => {
     receipt,
     isHighValue: amount >= HIGH_VALUE_THRESHOLD,
     status: 'pending',
+  });
+
+  await notifyApproversOnSubmit({
+    employeeId: req.user._id,
+    senderId: req.user._id,
+    title: 'Expense claim',
+    message: `${req.user.name} submitted expense "${req.body.title}" (Rs ${amount}) for approval`,
+    includeManagers: true,
+    includeHrAdmin: true,
   });
 
   return success(res, 201, 'Expense claim submitted', { claim: toDto(claim) });
@@ -107,13 +119,14 @@ const reviewClaim = asyncHandler(async (req, res) => {
 
   const email = claim.employee?.email;
   if (email) {
-    await notify({
+    await notifyRequesterOnDecision({
       to: email,
-      channel: 'email',
-      subject: `Expense claim ${decision}`,
+      userId: claim.employee?._id || claim.employee,
+      title: `Expense claim ${decision}`,
       message: `Your expense "${claim.title}" (Rs ${claim.amount}) was ${decision}.${
         claim.reviewNote ? ` Remarks: ${claim.reviewNote}` : ''
       }`,
+      decision,
     }).catch(() => null);
   }
 

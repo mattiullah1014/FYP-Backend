@@ -8,6 +8,7 @@ import * as attendanceRequest from '../controllers/attendanceRequestController.j
 import * as expenseController from '../controllers/expenseController.js';
 import * as attendanceDynamic from '../controllers/attendanceDynamicController.js';
 import * as payrollController from '../controllers/payrollController.js';
+import * as hrPerformance from '../controllers/hrPerformanceController.js';
 import { protect, authorize } from '../middleware/auth.js';
 import validate from '../middleware/validate.js';
 import upload from '../middleware/upload.js';
@@ -296,6 +297,29 @@ router.patch(
   ],
   validate,
   expenseController.reviewClaim
+);
+
+/* ── Performance (HR / Admin final review) ────────────────── */
+router.get('/performance', hrPerformance.listPerformance);
+router.get('/performance/report', hrPerformance.getPerformanceReport);
+router.get('/performance/:id', hrPerformance.getPerformanceById);
+router.patch(
+  '/performance/:id/hr-review',
+  [
+    body('hrReview')
+      .optional({ values: 'falsy' })
+      .trim()
+      .isLength({ min: 5 })
+      .withMessage('hrReview must be at least 5 characters'),
+    body('overallRating').optional({ values: 'falsy' }),
+    body('rating').optional({ values: 'falsy' }),
+    body('trainingRecommendation').optional({ values: 'falsy' }).trim().isString(),
+    body('promotionRecommendation')
+      .optional()
+      .isIn(['none', 'promote', 'demote']),
+  ],
+  validate,
+  hrPerformance.submitHrReview
 );
 
 /* ── Dynamic Payroll ──────────────────────────────────────── */

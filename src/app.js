@@ -23,6 +23,8 @@ import adminRoutes from './routes/adminRoutes.js';
 import managerRoutes from './routes/managerRoutes.js';
 import employeePortalRoutes from './routes/employeePortalRoutes.js';
 import hrRoutes from './routes/hrRoutes.js';
+import notificationRoutes from './routes/notificationRoutes.js';
+import chatRoutes from './routes/chatRoutes.js';
 import { UPLOADS_ROOT } from './utils/recruitmentHelpers.js';
 
 const app = express();
@@ -57,6 +59,8 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/manager', managerRoutes);
 app.use('/api/employee', employeePortalRoutes);
 app.use('/api/hr', hrRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/chat', chatRoutes);
 
 app.use(notFound);
 app.use(errorHandler);

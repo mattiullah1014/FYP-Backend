@@ -9,7 +9,10 @@ import {
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { success } from '../utils/apiResponse.js';
-import { notify } from '../services/notificationService.js';
+import {
+  notifyApproversOnSubmit,
+  notifyRequesterOnDecision,
+} from '../utils/approvalNotify.js';
 
 const startOfDay = (d = new Date()) => {
   const date = new Date(d);
@@ -193,6 +196,15 @@ const createCorrection = asyncHandler(async (req, res) => {
     status: 'pending',
   });
 
+  await notifyApproversOnSubmit({
+    employeeId: req.user._id,
+    senderId: req.user._id,
+    title: 'Attendance correction request',
+    message: `${meta.employeeName || req.user.name} requested attendance correction for ${dateOnly(day)}. Reason: ${reason}`,
+    includeManagers: true,
+    includeHrAdmin: true,
+  });
+
   return success(res, 201, 'Correction submitted', {
     correction: correctionDto(doc),
   });
@@ -231,6 +243,15 @@ const createWfh = asyncHandler(async (req, res) => {
     reason,
     // Open for Manager OR HR — either can approve/reject
     status: 'pending',
+  });
+
+  await notifyApproversOnSubmit({
+    employeeId: req.user._id,
+    senderId: req.user._id,
+    title: 'WFH request',
+    message: `${meta.employeeName || req.user.name} requested WFH for ${dateOnly(day)}. Reason: ${reason}`,
+    includeManagers: true,
+    includeHrAdmin: true,
   });
 
   return success(res, 201, 'WFH request submitted', { wfh: wfhDto(doc) });
@@ -289,13 +310,14 @@ const reviewCorrectionHr = asyncHandler(async (req, res) => {
 
   const email = doc.employee?.email;
   if (email) {
-    await notify({
+    await notifyRequesterOnDecision({
       to: email,
-      channel: 'email',
-      subject: `Attendance correction ${decision}`,
+      userId: doc.employee?._id || doc.employee,
+      title: `Attendance correction ${decision}`,
       message: `Your attendance correction for ${dateOnly(doc.date)} was ${decision}.${
         doc.reviewNote ? ` Remarks: ${doc.reviewNote}` : ''
       }`,
+      decision,
     }).catch(() => null);
   }
 
@@ -353,13 +375,14 @@ const reviewWfhHr = asyncHandler(async (req, res) => {
 
   const email = doc.employee?.email;
   if (email) {
-    await notify({
+    await notifyRequesterOnDecision({
       to: email,
-      channel: 'email',
-      subject: `WFH request ${decision}`,
+      userId: doc.employee?._id || doc.employee,
+      title: `WFH request ${decision}`,
       message: `Your WFH request for ${dateOnly(doc.date)} was ${decision} by HR.${
         doc.reviewNote ? ` Remarks: ${doc.reviewNote}` : ''
       }`,
+      decision,
     }).catch(() => null);
   }
 
@@ -416,13 +439,14 @@ const reviewWfhManager = asyncHandler(async (req, res) => {
 
   const email = doc.employee?.email;
   if (email) {
-    await notify({
+    await notifyRequesterOnDecision({
       to: email,
-      channel: 'email',
-      subject: `WFH request ${decision}`,
+      userId: doc.employee?._id || doc.employee,
+      title: `WFH request ${decision}`,
       message: `Your WFH for ${dateOnly(doc.date)} was ${decision} by your manager.${
         doc.reviewNote ? ` Remarks: ${doc.reviewNote}` : ''
       }`,
+      decision,
     }).catch(() => null);
   }
 
@@ -470,13 +494,14 @@ const reviewCorrectionManager = asyncHandler(async (req, res) => {
 
   const email = doc.employee?.email;
   if (email) {
-    await notify({
+    await notifyRequesterOnDecision({
       to: email,
-      channel: 'email',
-      subject: `Attendance correction ${decision}`,
+      userId: doc.employee?._id || doc.employee,
+      title: `Attendance correction ${decision}`,
       message: `Your attendance correction for ${dateOnly(doc.date)} was ${decision} by manager.${
         doc.reviewNote ? ` Remarks: ${doc.reviewNote}` : ''
       }`,
+      decision,
     }).catch(() => null);
   }
 

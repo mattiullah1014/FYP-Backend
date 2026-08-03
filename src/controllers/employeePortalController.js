@@ -8,11 +8,11 @@ import OvertimeRequest from '../models/OvertimeRequest.js';
 import { LeaveRequest } from '../models/Leave.js';
 import ExpenseClaim from '../models/Expense.js';
 import { Announcement, Message } from '../models/Communication.js';
+import { Goal, PerformanceReview } from '../models/Performance.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { success } from '../utils/apiResponse.js';
-import { ROLES } from '../constants/roles.js';
-import { notify } from '../services/notificationService.js';
+import { notifyApproversOnSubmit } from '../utils/approvalNotify.js';
 import { assertAssignedManager } from '../middleware/managerAuth.js';
 import {
   UPLOADS_ROOT,
@@ -139,54 +139,15 @@ const createLeave = asyncHandler(async (req, res) => {
     hrStatus: 'pending',
   });
 
-  // Notify ALL assigned managers + all HR/Admin
-  const [mgrLinks, hrUsers] = await Promise.all([
-    ManagerEmployeeAssignment.find({ employee: req.user._id }).select('manager'),
-    User.find({
-      role: { $in: [ROLES.HR, ROLES.ADMIN] },
-      isDeleted: { $ne: true },
-    }).select('_id email name'),
-  ]);
-
-  const recipientIds = new Set();
-  mgrLinks.forEach((l) => {
-    if (l.manager) recipientIds.add(String(l.manager));
+  // Notify ALL assigned managers + all HR/Admin (email + in-app)
+  await notifyApproversOnSubmit({
+    employeeId: req.user._id,
+    senderId: req.user._id,
+    title: 'Leave request',
+    message: `${req.user.name} requested ${leaveType} leave (${days} day(s))`,
+    includeManagers: true,
+    includeHrAdmin: true,
   });
-  hrUsers.forEach((u) => recipientIds.add(String(u._id)));
-
-  const title = 'Leave request';
-  const body = `${req.user.name} requested ${leaveType} leave (${days} day(s))`;
-
-  await Promise.all(
-    [...recipientIds].map((rid) =>
-      Message.create({
-        sender: req.user._id,
-        recipient: rid,
-        title,
-        body,
-        type: 'approval',
-      }).catch(() => null)
-    )
-  );
-
-  const emails = hrUsers.map((u) => u.email).filter(Boolean);
-  const mgrUsers = await User.find({
-    _id: { $in: mgrLinks.map((l) => l.manager).filter(Boolean) },
-  }).select('email');
-  mgrUsers.forEach((m) => {
-    if (m.email) emails.push(m.email);
-  });
-
-  await Promise.all(
-    [...new Set(emails)].map((toEmail) =>
-      notify({
-        to: toEmail,
-        channel: 'email',
-        subject: title,
-        message: body,
-      }).catch(() => null)
-    )
-  );
 
   return success(res, 201, 'Leave request submitted', { leave });
 });
@@ -226,6 +187,15 @@ const createOvertime = asyncHandler(async (req, res) => {
     title: 'Overtime request',
     body: `${req.user.name} requested ${overtime.hours}h overtime`,
     type: 'approval',
+  }).catch(() => null);
+
+  await notifyApproversOnSubmit({
+    employeeId: req.user._id,
+    senderId: req.user._id,
+    title: 'Overtime request',
+    message: `${req.user.name} requested ${overtime.hours}h overtime on ${req.body.date}. Reason: ${req.body.reason}`,
+    includeManagers: true,
+    includeHrAdmin: true,
   });
 
   return success(res, 201, 'Overtime submitted', { overtime });
@@ -284,39 +254,15 @@ const createExpense = asyncHandler(async (req, res) => {
     status: 'pending',
   });
 
-  // Notify HR / Admin only (not managers)
-  const hrUsers = await User.find({
-    role: { $in: [ROLES.HR, ROLES.ADMIN] },
-    isDeleted: { $ne: true },
-  }).select('_id email');
-
-  const title = 'Expense claim';
-  const body = `${req.user.name} submitted expense: ${claim.title} (Rs ${amount})`;
-
-  await Promise.all(
-    hrUsers.map((u) =>
-      Message.create({
-        sender: req.user._id,
-        recipient: u._id,
-        title,
-        body,
-        type: 'approval',
-      }).catch(() => null)
-    )
-  );
-
-  await Promise.all(
-    hrUsers
-      .filter((u) => u.email)
-      .map((u) =>
-        notify({
-          to: u.email,
-          channel: 'email',
-          subject: title,
-          message: body,
-        }).catch(() => null)
-      )
-  );
+  // Notify managers + HR/Admin
+  await notifyApproversOnSubmit({
+    employeeId: req.user._id,
+    senderId: req.user._id,
+    title: 'Expense claim',
+    message: `${req.user.name} submitted expense: ${claim.title} (Rs ${amount})`,
+    includeManagers: true,
+    includeHrAdmin: true,
+  });
 
   return success(res, 201, 'Expense submitted', {
     expense: {
@@ -463,6 +409,138 @@ const dashboard = asyncHandler(async (req, res) => {
   });
 });
 
+/** GET /employee/performance — manager reviews + goals + task stats for self */
+const getMyPerformance = asyncHandler(async (req, res) => {
+  const uid = req.user._id;
+
+  const [reviews, goals, tasksCompleted, tasksTotal] = await Promise.all([
+    PerformanceReview.find({ employee: uid })
+      .populate('reviewer', 'name email designation')
+      .populate('manager', 'name email designation')
+      .sort({ createdAt: -1 }),
+    Goal.find({ employee: uid }).sort({ createdAt: -1 }).limit(20),
+    Task.countDocuments({
+      assignee: uid,
+      status: 'completed',
+      isDeleted: false,
+    }),
+    Task.countDocuments({
+      assignee: uid,
+      isDeleted: false,
+    }),
+  ]);
+
+  const mappedReviews = reviews.map((r) => {
+    const mgr = r.manager || r.reviewer;
+    return {
+      id: String(r._id),
+      period: r.period,
+      rating: r.rating ?? null,
+      overallRating: r.overallRating ?? null,
+      feedback: r.feedback || r.managerComments || '',
+      managerComments: r.managerComments || r.feedback || '',
+      selfAssessment: r.selfAssessment || '',
+      hrReview: r.hrReview || '',
+      trainingRecommendation: r.trainingRecommendation || '',
+      promotionRecommendation: r.promotionRecommendation || 'none',
+      kpis: r.kpis || [],
+      status: r.status,
+      managerName: mgr?.name || 'Manager',
+      managerId: mgr?._id ? String(mgr._id) : null,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+    };
+  });
+
+  const latest = mappedReviews[0] || null;
+
+  return success(res, 200, 'Performance fetched', {
+    reviews: mappedReviews,
+    latestReview: latest,
+    managerReview: latest
+      ? {
+          rating: latest.rating,
+          comments: latest.feedback,
+          period: latest.period,
+          managerName: latest.managerName,
+          kpis: latest.kpis,
+          status: latest.status,
+        }
+      : null,
+    goals: goals.map((g) => {
+      const target = Number(g.targetValue) || 0;
+      const current = Number(g.currentValue) || 0;
+      const progress =
+        target > 0 ? Math.min(100, Math.round((current / target) * 100)) : 0;
+      return {
+        id: String(g._id),
+        title: g.title,
+        description: g.description || '',
+        status: g.status,
+        progress,
+        targetValue: g.targetValue,
+        currentValue: g.currentValue,
+        dueDate: g.dueDate,
+      };
+    }),
+    tasksCompleted,
+    tasksTotal,
+    selfAssessment: latest?.selfAssessment
+      ? { text: latest.selfAssessment }
+      : null,
+  });
+});
+
+/**
+ * POST /employee/performance/self-assessment
+ * Body: { text|selfAssessment, rating?, reviewId? }
+ * Attaches self-assessment to an existing review (or creates a draft for self).
+ */
+const submitSelfAssessment = asyncHandler(async (req, res) => {
+  const text = String(
+    req.body.text || req.body.selfAssessment || '',
+  ).trim();
+  if (text.length < 20) {
+    throw new ApiError(400, 'Self assessment must be at least 20 characters');
+  }
+
+  let review = null;
+  if (req.body.reviewId) {
+    review = await PerformanceReview.findOne({
+      _id: req.body.reviewId,
+      employee: req.user._id,
+    });
+    if (!review) throw new ApiError(404, 'Review not found');
+  } else {
+    review = await PerformanceReview.findOne({ employee: req.user._id }).sort({
+      createdAt: -1,
+    });
+  }
+
+  if (!review) {
+    review = await PerformanceReview.create({
+      employee: req.user._id,
+      period: req.body.period || new Date().toISOString().slice(0, 7),
+      selfAssessment: text,
+      status: 'submitted',
+    });
+  } else {
+    review.selfAssessment = text;
+    if (review.status === 'draft') review.status = 'submitted';
+    await review.save();
+  }
+
+  return success(res, 200, 'Self-assessment submitted', {
+    review: {
+      id: String(review._id),
+      period: review.period,
+      selfAssessment: review.selfAssessment,
+      status: review.status,
+      rating: review.rating,
+    },
+  });
+});
+
 export {
   listManagers,
   listTasks,
@@ -476,4 +554,6 @@ export {
   profileCompletion,
   updateProfileSection,
   dashboard,
+  getMyPerformance,
+  submitSelfAssessment,
 };

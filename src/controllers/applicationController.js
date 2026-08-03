@@ -12,6 +12,7 @@ import {
   saveResumeFile,
 } from '../utils/recruitmentHelpers.js';
 import { notify } from '../services/notificationService.js';
+import { notifyHrAdmin } from '../utils/approvalNotify.js';
 import { logAudit } from '../services/auditService.js';
 import { buildFullEmployeeDto } from '../utils/hrEmployeeHelpers.js';
 import { getOrCreateProfileCompletion } from '../utils/profileCompletion.js';
@@ -78,7 +79,18 @@ const applyToJob = asyncHandler(async (req, res) => {
 
   await notify({
     to: req.user.email,
+    userId: req.user._id,
+    channel: 'email',
+    subject: 'Application submitted',
     message: `Application submitted for ${job.title}`,
+    type: 'success',
+  });
+
+  await notifyHrAdmin({
+    senderId: req.user._id,
+    title: 'New job application',
+    message: `${req.user.name} applied for ${job.title}`,
+    type: 'info',
   });
 
   return success(res, 201, 'Application submitted', { application });
@@ -217,7 +229,11 @@ const markReview = asyncHandler(async (req, res) => {
   if (reviewTo) {
     await notify({
       to: reviewTo,
+      userId: application.candidate?._id,
+      channel: 'email',
+      subject: 'Application under review',
       message: 'Your application is under review',
+      type: 'info',
     });
   }
 
@@ -244,7 +260,11 @@ const shortlist = asyncHandler(async (req, res) => {
   if (shortlistTo) {
     await notify({
       to: shortlistTo,
+      userId: application.candidate?._id,
+      channel: 'email',
+      subject: 'You have been shortlisted',
       message: 'Congratulations! You have been shortlisted',
+      type: 'success',
     });
   }
 
@@ -271,7 +291,11 @@ const reject = asyncHandler(async (req, res) => {
   if (rejectTo) {
     await notify({
       to: rejectTo,
+      userId: application.candidate?._id,
+      channel: 'email',
+      subject: 'Application update',
       message: 'Your application was not selected at this time',
+      type: 'warning',
     });
   }
 
@@ -325,7 +349,11 @@ const scheduleInterview = asyncHandler(async (req, res) => {
 
   await notify({
     to: application.candidate.email,
+    userId: application.candidate._id,
+    channel: 'email',
+    subject: 'Interview scheduled',
     message: application.interview.message,
+    type: 'info',
   });
 
   return success(res, 200, 'Interview scheduled', { application });
@@ -425,8 +453,12 @@ const selectCandidate = asyncHandler(async (req, res) => {
 
   await notify({
     to: user.email,
+    userId: user._id,
+    channel: 'email',
+    subject: 'Selected — welcome aboard',
     message:
       'Congratulations! You have been selected and converted to an employee.',
+    type: 'success',
   });
 
   const employeeDto = await buildFullEmployeeDto(employee);

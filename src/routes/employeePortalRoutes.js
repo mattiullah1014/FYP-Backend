@@ -268,6 +268,28 @@ router.post(
 );
 router.get('/expenses', employeePortalController.listExpenses);
 
+/* ── Performance (self) ───────────────────────────────────── */
+router.get('/performance', employeePortalController.getMyPerformance);
+router.post(
+  '/performance/self-assessment',
+  [
+    body('text')
+      .optional()
+      .isString()
+      .isLength({ min: 20 })
+      .withMessage('text must be at least 20 characters'),
+    body('selfAssessment')
+      .optional()
+      .isString()
+      .isLength({ min: 20 })
+      .withMessage('selfAssessment must be at least 20 characters'),
+    body('reviewId').optional({ values: 'falsy' }).isString(),
+    body('period').optional({ values: 'falsy' }).trim(),
+  ],
+  validate,
+  employeePortalController.submitSelfAssessment
+);
+
 /* ── Payroll / Payslips (self) ────────────────────────────── */
 router.get('/payroll/payslips', payrollController.myPayslips);
 router.get('/payroll/payslips/:id', payrollController.getPayslip);

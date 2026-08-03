@@ -106,7 +106,12 @@ const completeReview = asyncHandler(async (req, res) => {
   review.rating = req.body.rating;
   review.promotionRecommendation = req.body.promotionRecommendation || 'none';
   review.reviewer = req.user._id;
-  review.status = 'completed';
+  // Manager path → send to HR; HR/Admin completing via this endpoint also finalizes
+  if (req.user.role === ROLES.MANAGER) {
+    review.status = 'pending_hr';
+  } else {
+    review.status = 'completed';
+  }
   await review.save();
   return success(res, 200, 'Review completed', { review });
 });

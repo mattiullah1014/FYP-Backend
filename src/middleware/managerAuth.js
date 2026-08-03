@@ -4,8 +4,28 @@ import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { ROLES } from '../constants/roles.js';
 
-/** Ensure req.user is an active manager and attach ManagerProfile */
+/** Ensure req.user is an active manager (or admin) and attach ManagerProfile */
 export const loadManagerProfile = asyncHandler(async (req, res, next) => {
+  // Admin may reuse manager report/team APIs with org-wide scope
+  if (req.user.role === ROLES.ADMIN) {
+    req.managerProfile = {
+      user: req.user._id,
+      title: 'Administrator',
+      status: 'active',
+      permissions: {
+        teamManagement: true,
+        approvals: true,
+        performance: true,
+        tasks: true,
+        reports: true,
+        communication: true,
+      },
+      isAdminBypass: true,
+    };
+    req.isAdminManagerBypass = true;
+    return next();
+  }
+
   if (req.user.role !== ROLES.MANAGER) {
     throw new ApiError(403, 'Manager role required');
   }
@@ -31,6 +51,9 @@ export const loadManagerProfile = asyncHandler(async (req, res, next) => {
 /** Require a specific manager permission flag */
 export const requireManagerPermission = (flag) =>
   asyncHandler(async (req, res, next) => {
+    if (req.isAdminManagerBypass || req.user?.role === ROLES.ADMIN) {
+      return next();
+    }
     const profile = req.managerProfile;
     if (!profile) {
       throw new ApiError(500, 'Manager profile not loaded');
@@ -42,7 +65,8 @@ export const requireManagerPermission = (flag) =>
   });
 
 /** Verify employee is on this manager's team */
-export const assertTeamMember = async (managerId, employeeId) => {
+export const assertTeamMember = async (managerId, employeeId, opts = {}) => {
+  if (opts.orgWide || opts.isAdmin) return true;
   const link = await ManagerEmployeeAssignment.findOne({
     manager: managerId,
     employee: employeeId,

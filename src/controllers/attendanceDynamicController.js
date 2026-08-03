@@ -6,12 +6,13 @@ import Employee from '../models/Employee.js';
 import User from '../models/User.js';
 import { LeaveRequest } from '../models/Leave.js';
 import { Holiday } from '../models/Admin.js';
-import { Message } from '../models/Communication.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { success } from '../utils/apiResponse.js';
-import { ROLES } from '../constants/roles.js';
-import { notify } from '../services/notificationService.js';
+import {
+  notifyApproversOnSubmit,
+  notifyRequesterOnDecision,
+} from '../utils/approvalNotify.js';
 
 const DEFAULTS = {
   workStart: '09:00',
@@ -236,34 +237,15 @@ const attendanceDto = (doc, extras = {}) => {
   };
 };
 
-const notifyHr = async (subject, message, senderId) => {
-  const hrs = await User.find({
-    role: { $in: [ROLES.HR, ROLES.ADMIN] },
-    isDeleted: { $ne: true },
-  }).select('_id email');
-  await Promise.all(
-    hrs.map((u) =>
-      Message.create({
-        sender: senderId,
-        recipient: u._id,
-        title: subject,
-        body: message,
-        type: 'approval',
-      }).catch(() => null)
-    )
-  );
-  await Promise.all(
-    hrs
-      .filter((u) => u.email)
-      .map((u) =>
-        notify({
-          to: u.email,
-          channel: 'email',
-          subject,
-          message,
-        }).catch(() => null)
-      )
-  );
+const notifyHr = async (subject, message, senderId, employeeId = null) => {
+  await notifyApproversOnSubmit({
+    employeeId: employeeId || senderId,
+    senderId,
+    title: subject,
+    message,
+    includeManagers: true,
+    includeHrAdmin: true,
+  });
 };
 
 /** GET /hr/attendance/rules | GET /employee/attendance/rules */
@@ -414,6 +396,7 @@ const clockIn = asyncHandler(async (req, res) => {
     await notifyHr(
       'Half-day approval needed',
       `${req.user.name} clocked in at ${now.toLocaleTimeString()} (after ${rules.halfDayAfter}). Pending half-day approval.`,
+      req.user._id,
       req.user._id
     );
   }
@@ -470,6 +453,7 @@ const clockOut = asyncHandler(async (req, res) => {
     await notifyHr(
       'Overtime approval needed',
       `${req.user.name} clocked out late — ${hours}h OT pending HR approval.`,
+      req.user._id,
       req.user._id
     );
   }
@@ -588,11 +572,12 @@ const reviewHalfDayHr = asyncHandler(async (req, res) => {
   }
 
   if (doc.employee?.email) {
-    await notify({
+    await notifyRequesterOnDecision({
       to: doc.employee.email,
-      channel: 'email',
-      subject: `Half-day request ${decision}`,
+      userId: doc.employee._id || doc.employee,
+      title: `Half-day request ${decision}`,
       message: `Your half-day request for ${String(doc.date).slice(0, 10)} was ${decision}.`,
+      decision,
     }).catch(() => null);
   }
 
@@ -652,11 +637,12 @@ const reviewOvertimeHr = asyncHandler(async (req, res) => {
   await doc.save();
 
   if (doc.employee?.email) {
-    await notify({
+    await notifyRequesterOnDecision({
       to: doc.employee.email,
-      channel: 'email',
-      subject: `Overtime ${decision}`,
+      userId: doc.employee._id || doc.employee,
+      title: `Overtime ${decision}`,
       message: `Your overtime (${doc.hours}h) was ${decision}.`,
+      decision,
     }).catch(() => null);
   }
 

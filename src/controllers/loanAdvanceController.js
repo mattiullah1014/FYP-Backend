@@ -4,7 +4,10 @@ import User from '../models/User.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { success } from '../utils/apiResponse.js';
-import { notify } from '../services/notificationService.js';
+import {
+  notifyApproversOnSubmit,
+  notifyRequesterOnDecision,
+} from '../utils/approvalNotify.js';
 
 const toDto = (doc) => {
   const r = doc?.toObject ? doc.toObject() : doc;
@@ -82,6 +85,16 @@ const createRequest = (type) =>
       reason,
       installments,
       status: 'pending',
+    });
+
+    const label = type === 'loan' ? 'Loan' : 'Advance';
+    await notifyApproversOnSubmit({
+      employeeId: req.user._id,
+      senderId: req.user._id,
+      title: `${label} request`,
+      message: `${meta.employeeName || req.user.name} requested ${label.toLowerCase()} of Rs ${amount}. Reason: ${reason}`,
+      includeManagers: true,
+      includeHrAdmin: true,
     });
 
     return success(
@@ -166,13 +179,14 @@ const reviewRequest = (type) =>
     const empEmail = doc.employee?.email;
     if (empEmail) {
       const label = type === 'loan' ? 'Loan' : 'Advance';
-      await notify({
+      await notifyRequesterOnDecision({
         to: empEmail,
-        channel: 'email',
-        subject: `${label} request ${decision}`,
+        userId: doc.employee?._id || doc.employee,
+        title: `${label} request ${decision}`,
         message: `Your ${label.toLowerCase()} request of Rs ${doc.amount} was ${decision}.${
           doc.reviewNote ? ` Remarks: ${doc.reviewNote}` : ''
         }`,
+        decision,
       }).catch(() => null);
     }
 
