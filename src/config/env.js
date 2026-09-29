@@ -25,6 +25,10 @@ const env = {
       'Brilliance <noreply@brilliance.local>'
     ).trim(),
   },
+  gemini: {
+    apiKey: (process.env.GEMINI_API_KEY || '').trim(),
+    model: (process.env.GEMINI_MODEL || 'gemini-flash-lite-latest').trim(),
+  },
 };
 
 export default env;

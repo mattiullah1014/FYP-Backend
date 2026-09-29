@@ -26,6 +26,7 @@ import hrRoutes from './routes/hrRoutes.js';
 import notificationRoutes from './routes/notificationRoutes.js';
 import settingsRoutes from './routes/settingsRoutes.js';
 import chatRoutes from './routes/chatRoutes.js';
+import chatbotRoutes from './routes/chatbotRoutes.js';
 import { UPLOADS_ROOT } from './utils/recruitmentHelpers.js';
 
 const app = express();
@@ -63,6 +64,7 @@ app.use('/api/hr', hrRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/chatbot', chatbotRoutes);
 
 app.use(notFound);
 app.use(errorHandler);
