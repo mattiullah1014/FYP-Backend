@@ -85,7 +85,9 @@ const listHolidaysNear = async (fromDate, toDate) => {
 const findHolidayOn = async (day) => {
   const start = startOfDay(day);
   const end = endOfDay(day);
-  return Holiday.findOne({ date: { $gte: start, $lte: end } });
+  return Holiday.findOne({ date: { $gte: start, $lte: end } })
+    .select('name date type')
+    .lean();
 };
 
 /**
@@ -134,6 +136,24 @@ export const getOrCreateRules = async () => {
     doc = await AttendanceRules.create({ key: 'default', ...DEFAULTS });
   }
   return doc;
+};
+
+/** Short-lived in-memory rules cache (clock-in/out hot path). */
+let rulesDtoCache = { value: null, at: 0 };
+const RULES_CACHE_MS = 60_000;
+
+export const getRulesDtoCached = async () => {
+  const now = Date.now();
+  if (rulesDtoCache.value && now - rulesDtoCache.at < RULES_CACHE_MS) {
+    return rulesDtoCache.value;
+  }
+  const dto = rulesDto(await getOrCreateRules());
+  rulesDtoCache = { value: dto, at: now };
+  return dto;
+};
+
+export const invalidateRulesCache = () => {
+  rulesDtoCache = { value: null, at: 0 };
 };
 
 const rulesDto = (doc) => {
@@ -237,15 +257,16 @@ const attendanceDto = (doc, extras = {}) => {
   };
 };
 
-const notifyHr = async (subject, message, senderId, employeeId = null) => {
-  await notifyApproversOnSubmit({
+const notifyHr = (subject, message, senderId, employeeId = null) => {
+  // Fire-and-forget — never block clock-in/out on SMTP
+  void notifyApproversOnSubmit({
     employeeId: employeeId || senderId,
     senderId,
     title: subject,
     message,
     includeManagers: true,
     includeHrAdmin: true,
-  });
+  }).catch((err) => console.error('[notifyHr]', err.message));
 };
 
 /** GET /hr/attendance/rules | GET /employee/attendance/rules */
@@ -325,6 +346,7 @@ const updateRules = asyncHandler(async (req, res) => {
   }
 
   await doc.save();
+  invalidateRulesCache();
   const rules = rulesDto(doc);
   const yearStart = new Date(new Date().getFullYear(), 0, 1);
   const yearEnd = new Date(new Date().getFullYear() + 1, 11, 31);
@@ -338,13 +360,17 @@ const updateRules = asyncHandler(async (req, res) => {
 /** POST /employee/attendance/clock-in */
 const clockIn = asyncHandler(async (req, res) => {
   const today = startOfDay();
-  let record = await Attendance.findOne({
-    employee: req.user._id,
-    date: today,
-  });
-  if (record?.clockIn) throw new ApiError(400, 'Already clocked in today');
+  const userId = req.user._id;
 
-  const rules = rulesDto(await getOrCreateRules());
+  // Parallel: existing attendance + rules (cached)
+  const [existing, rules] = await Promise.all([
+    Attendance.findOne({ employee: userId, date: today })
+      .select('clockIn status')
+      .lean(),
+    getRulesDtoCached(),
+  ]);
+  if (existing?.clockIn) throw new ApiError(400, 'Already clocked in today');
+
   const dayOff = await resolveDayOff(today, rules);
   if (dayOff.isOff && !rules.allowOffDayClockIn) {
     throw new ApiError(
@@ -356,10 +382,10 @@ const clockIn = asyncHandler(async (req, res) => {
   const now = new Date();
   const evalIn = evaluateClockIn(now, rules);
 
-  record = await Attendance.findOneAndUpdate(
-    { employee: req.user._id, date: today },
+  const record = await Attendance.findOneAndUpdate(
+    { employee: userId, date: today },
     {
-      employee: req.user._id,
+      employee: userId,
       date: today,
       clockIn: now,
       clockInLocation: req.body.location,
@@ -372,13 +398,13 @@ const clockIn = asyncHandler(async (req, res) => {
 
   let halfDayRequest = null;
   if (evalIn.needsHalfDayApproval) {
-    const emp = await Employee.findOne({ user: req.user._id }).select(
-      'empId name'
-    );
+    const emp = await Employee.findOne({ user: userId })
+      .select('empId name')
+      .lean();
     halfDayRequest = await HalfDayRequest.findOneAndUpdate(
-      { employee: req.user._id, date: today },
+      { employee: userId, date: today },
       {
-        employee: req.user._id,
+        employee: userId,
         empId: emp?.empId || req.user.employeeId || '',
         employeeName: emp?.name || req.user.name || '',
         date: today,
@@ -393,18 +419,17 @@ const clockIn = asyncHandler(async (req, res) => {
     record.halfDayRequest = halfDayRequest._id;
     await record.save();
 
-    await notifyHr(
+    notifyHr(
       'Half-day approval needed',
       `${req.user.name} clocked in at ${now.toLocaleTimeString()} (after ${rules.halfDayAfter}). Pending half-day approval.`,
-      req.user._id,
-      req.user._id
+      userId,
+      userId
     );
   }
 
   return success(res, 200, 'Clocked in', {
     attendance: attendanceDto(record),
     evaluation: evalIn,
-    rules,
     halfDayRequest: halfDayRequest
       ? {
           id: String(halfDayRequest._id),
@@ -418,14 +443,15 @@ const clockIn = asyncHandler(async (req, res) => {
 /** POST /employee/attendance/clock-out */
 const clockOut = asyncHandler(async (req, res) => {
   const today = startOfDay();
-  const record = await Attendance.findOne({
-    employee: req.user._id,
-    date: today,
-  });
+  const userId = req.user._id;
+
+  const [record, rules] = await Promise.all([
+    Attendance.findOne({ employee: userId, date: today }),
+    getRulesDtoCached(),
+  ]);
   if (!record?.clockIn) throw new ApiError(400, 'Clock in first');
   if (record.clockOut) throw new ApiError(400, 'Already clocked out');
 
-  const rules = rulesDto(await getOrCreateRules());
   const now = new Date();
   const evalOut = evaluateClockOut(now, rules);
 
@@ -441,7 +467,7 @@ const clockOut = asyncHandler(async (req, res) => {
   if (evalOut.needsOvertimeApproval) {
     const hours = Math.round((evalOut.overtimeMinutes / 60) * 100) / 100;
     overtimeRequest = await OvertimeRequest.create({
-      employee: req.user._id,
+      employee: userId,
       date: today,
       hours: Math.max(0.25, hours),
       reason: `Auto: clock-out after ${rules.workEnd} (+${evalOut.overtimeMinutes} min)`,
@@ -450,11 +476,11 @@ const clockOut = asyncHandler(async (req, res) => {
     });
     record.overtimeRequest = overtimeRequest._id;
 
-    await notifyHr(
+    notifyHr(
       'Overtime approval needed',
       `${req.user.name} clocked out late — ${hours}h OT pending HR approval.`,
-      req.user._id,
-      req.user._id
+      userId,
+      userId
     );
   }
 
@@ -463,7 +489,6 @@ const clockOut = asyncHandler(async (req, res) => {
   return success(res, 200, 'Clocked out', {
     attendance: attendanceDto(record),
     evaluation: evalOut,
-    rules,
     overtimeRequest: overtimeRequest
       ? {
           id: String(overtimeRequest._id),
@@ -484,12 +509,13 @@ const listMyAttendance = asyncHandler(async (req, res) => {
     if (from) filter.date.$gte = startOfDay(from);
     if (to) filter.date.$lte = startOfDay(to);
   }
-  const records = await Attendance.find(filter).sort({ date: -1 }).limit(90);
-  const today = await Attendance.findOne({
-    employee: req.user._id,
-    date: startOfDay(),
-  });
-  const rules = rulesDto(await getOrCreateRules());
+
+  const todayStart = startOfDay();
+  const [records, today, rules] = await Promise.all([
+    Attendance.find(filter).sort({ date: -1 }).limit(60).lean(),
+    Attendance.findOne({ employee: req.user._id, date: todayStart }).lean(),
+    getRulesDtoCached(),
+  ]);
   const dayOff = await resolveDayOff(new Date(), rules);
 
   return success(res, 200, 'Attendance fetched', {
