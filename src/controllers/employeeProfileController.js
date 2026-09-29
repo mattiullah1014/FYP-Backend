@@ -116,10 +116,14 @@ const toSelfProfileDto = (employee, user) => {
     iban: emp.bank?.iban || '',
   };
 
+  const emergencyFromUser = Array.isArray(u?.emergencyContacts)
+    ? u.emergencyContacts[0]
+    : null;
   const emergencyContact = {
-    name: emp.emergencyContact?.name || '',
-    relation: emp.emergencyContact?.relation || '',
-    phone: emp.emergencyContact?.phone || '',
+    name: emp.emergencyContact?.name || emergencyFromUser?.name || '',
+    relation:
+      emp.emergencyContact?.relation || emergencyFromUser?.relation || '',
+    phone: emp.emergencyContact?.phone || emergencyFromUser?.phone || '',
   };
 
   return {
@@ -144,6 +148,7 @@ const toSelfProfileDto = (employee, user) => {
     status,
     joined,
     dateOfJoining: joined,
+    onboardingComplete: Boolean(emp.onboardingComplete),
     avatar: u?.avatar || u?.photo?.url || null,
     avatarUrl: u?.avatarUrl || null,
     photo: u?.photo || null,
@@ -258,6 +263,20 @@ const updateMyProfile = asyncHandler(async (req, res) => {
     employee.branch = String(body.branch).trim();
   }
 
+  const joiningRaw = body.dateOfJoining ?? body.joinedAt;
+  if (joiningRaw !== undefined && joiningRaw !== null && joiningRaw !== '') {
+    const d = new Date(joiningRaw);
+    if (Number.isNaN(d.getTime())) {
+      throw new ApiError(400, 'dateOfJoining must be a valid date (YYYY-MM-DD)');
+    }
+    employee.joinedAt = d;
+    user.dateOfJoining = d;
+  }
+
+  if (body.onboardingComplete === true) {
+    employee.onboardingComplete = true;
+  }
+
   if (body.address !== undefined) {
     if (typeof body.address !== 'object' || body.address === null) {
       throw new ApiError(400, 'address must be an object');
@@ -305,6 +324,7 @@ const updateMyProfile = asyncHandler(async (req, res) => {
       relation: body.emergencyContact.relation ?? prev.relation ?? '',
       phone: body.emergencyContact.phone ?? prev.phone ?? '',
     };
+    user.emergencyContacts = [employee.emergencyContact];
   }
 
   await employee.save();
@@ -321,8 +341,14 @@ const updateMyProfile = asyncHandler(async (req, res) => {
     completion.bankDetailsComplete = Boolean(
       employee.bank.accountNumber || employee.bank.iban
     );
-    await completion.save();
   }
+  if (
+    employee.emergencyContact?.name ||
+    employee.emergencyContact?.phone
+  ) {
+    completion.emergencyContactComplete = true;
+  }
+  await completion.save();
   await syncProfileCompletionFromUser(user._id);
 
   const refreshedUser = await loadSelfUser(user._id);

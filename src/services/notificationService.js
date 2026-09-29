@@ -1,5 +1,5 @@
 import { sendEmail } from './emailService.js';
-import User from '../models/User.js';
+import User, { emailAlertsEnabled } from '../models/User.js';
 import Notification from '../models/Notification.js';
 
 const inferType = (subject = '', message = '') => {
@@ -23,6 +23,28 @@ const looksSensitiveOtp = (subject = '', message = '') =>
   /\b(otp|one[- ]?time|verification code|2fa code|login code)\b/i.test(
     `${subject} ${message}`,
   );
+
+/** OTP, password reset, and 2FA must send even when Email Alerts are off. */
+const looksLikeSecurityMail = (subject = '', message = '') => {
+  if (looksSensitiveOtp(subject, message)) return true;
+  return /\b(password reset|reset password|two-factor|2fa)\b/i.test(
+    `${subject} ${message}`,
+  );
+};
+
+const escapeEmail = (email) =>
+  String(email).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const findUserForNotify = async ({ userId, to }) => {
+  if (userId) {
+    return User.findById(userId).select('email notificationPreferences');
+  }
+  if (!to) return null;
+  const email = String(to).trim().toLowerCase();
+  return User.findOne({
+    email: new RegExp(`^${escapeEmail(email)}$`, 'i'),
+  }).select('email notificationPreferences');
+};
 
 const messageFallback = (subject) =>
   subject ? String(subject) : 'You have a new notification';
@@ -76,7 +98,11 @@ const createInAppNotification = async ({
  *  - subject, message, html
  *  - type: success|info|warning|error
  *  - skipInApp: skip DB notification (OTP etc.)
+ *  - security: always send email (OTP, reset password, 2FA) — ignores Email Alerts
  *  - meta: extra payload
+ * Product mail (leave, OT, interview, payslip, …) is skipped when
+ * notificationPreferences.emailAlerts === false. Missing field = enabled.
+ * In-app row is still saved (channel in_app) so the bell keeps working.
  */
 const notify = async ({
   to,
@@ -87,12 +113,26 @@ const notify = async ({
   html,
   type,
   skipInApp = false,
+  security = false,
   meta,
 } = {}) => {
   const title = subject || 'Brilliance notification';
   const body = message || title;
   const notifType = type || inferType(subject, message);
   const shouldSkipInApp = skipInApp || looksSensitiveOtp(subject, message);
+  const bypassPreference =
+    security === true || looksLikeSecurityMail(subject, message);
+
+  let deliverEmail = channel === 'email';
+  if (deliverEmail && !bypassPreference) {
+    const user = await findUserForNotify({ userId, to });
+    if (user && !emailAlertsEnabled(user)) {
+      deliverEmail = false;
+    }
+  }
+
+  const storedChannel =
+    channel === 'email' && !deliverEmail ? 'in_app' : channel;
 
   let inApp = null;
   if (!shouldSkipInApp) {
@@ -102,10 +142,23 @@ const notify = async ({
       title,
       body,
       type: notifType,
-      channel,
+      channel: storedChannel,
       subject: title,
       meta,
     });
+  }
+
+  if (channel === 'email' && !deliverEmail) {
+    console.log(
+      `[notify:email:skipped] to=${to} subject=${title} reason=email_alerts_disabled`,
+    );
+    return {
+      queued: false,
+      channel: 'in_app',
+      skipped: true,
+      reason: 'email_alerts_disabled',
+      inAppId: inApp?._id || null,
+    };
   }
 
   if (channel === 'email') {

@@ -55,6 +55,17 @@ const personalInfoSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const notificationPreferencesSchema = new mongoose.Schema(
+  {
+    emailAlerts: { type: Boolean, default: true },
+  },
+  { _id: false }
+);
+
+/** Missing / legacy docs are treated as opted in. */
+export const emailAlertsEnabled = (user) =>
+  user?.notificationPreferences?.emailAlerts !== false;
+
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
@@ -117,6 +128,10 @@ const userSchema = new mongoose.Schema(
     isActive: { type: Boolean, default: true },
     isDeleted: { type: Boolean, default: false },
     deletedAt: Date,
+    notificationPreferences: {
+      type: notificationPreferencesSchema,
+      default: () => ({ emailAlerts: true }),
+    },
     twoFactorEnabled: { type: Boolean, default: false },
     twoFactorToken: String,
     twoFactorExpire: Date,
@@ -156,6 +171,9 @@ userSchema.methods.toSafeObject = function toSafeObject() {
       obj.candidateProfile.isProfileComplete = complete;
     }
   }
+  const emailAlerts = emailAlertsEnabled(obj);
+  obj.notificationPreferences = { emailAlerts };
+  obj.emailAlerts = emailAlerts;
   return obj;
 };
 

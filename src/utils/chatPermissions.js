@@ -19,12 +19,13 @@ export const mapContact = (user) => {
     id,
     name: user.name || 'User',
     role: user.role,
+    // Prefer relative /uploads/... so clients rebase onto current API host
     avatar:
-      user.avatarUrl ||
       user.avatar ||
       user.photo?.url ||
-      user.candidateProfile?.avatarUrl ||
       user.candidateProfile?.avatar ||
+      user.avatarUrl ||
+      user.candidateProfile?.avatarUrl ||
       null,
   };
 };

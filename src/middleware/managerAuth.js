@@ -1,5 +1,6 @@
 import ManagerProfile from '../models/ManagerProfile.js';
 import ManagerEmployeeAssignment from '../models/ManagerEmployeeAssignment.js';
+import User from '../models/User.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { ROLES } from '../constants/roles.js';
@@ -71,10 +72,17 @@ export const assertTeamMember = async (managerId, employeeId, opts = {}) => {
     manager: managerId,
     employee: employeeId,
   });
-  if (!link) {
-    throw new ApiError(403, 'Employee is not on your team');
-  }
-  return link;
+  if (link) return link;
+
+  // Also allow employees whose User.manager points to this manager
+  const direct = await User.findOne({
+    _id: employeeId,
+    manager: managerId,
+    isDeleted: false,
+  }).select('_id');
+  if (direct) return { employee: employeeId, manager: managerId, relationshipType: 'primary' };
+
+  throw new ApiError(403, 'Employee is not on your team');
 };
 
 /** Verify manager reviews this employee (assignment exists) */

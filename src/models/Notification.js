@@ -15,7 +15,7 @@ const notificationSchema = new mongoose.Schema(
       enum: ['success', 'info', 'warning', 'error'],
       default: 'info',
     },
-    /** email | log | system */
+    /** email | in_app | log | system */
     channel: { type: String, default: 'email' },
     subject: { type: String, default: '' },
     emailTo: { type: String, default: '' },

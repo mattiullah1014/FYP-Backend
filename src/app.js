@@ -24,6 +24,7 @@ import managerRoutes from './routes/managerRoutes.js';
 import employeePortalRoutes from './routes/employeePortalRoutes.js';
 import hrRoutes from './routes/hrRoutes.js';
 import notificationRoutes from './routes/notificationRoutes.js';
+import settingsRoutes from './routes/settingsRoutes.js';
 import chatRoutes from './routes/chatRoutes.js';
 import { UPLOADS_ROOT } from './utils/recruitmentHelpers.js';
 
@@ -60,6 +61,7 @@ app.use('/api/manager', managerRoutes);
 app.use('/api/employee', employeePortalRoutes);
 app.use('/api/hr', hrRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/settings', settingsRoutes);
 app.use('/api/chat', chatRoutes);
 
 app.use(notFound);

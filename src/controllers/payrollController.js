@@ -18,6 +18,8 @@ import {
   monthKey,
   generatePayslipPdfFile,
 } from '../services/payrollDynamicService.js';
+import { absoluteUploadUrl } from '../utils/recruitmentHelpers.js';
+import { computeNextSalaryDate } from '../utils/salaryDate.js';
 
 const findEmployeeByParam = async (raw) => {
   const id = String(raw || '').trim();
@@ -199,8 +201,8 @@ const downloadPayslipPdf = asyncHandler(async (req, res) => {
   }
 
   return success(res, 200, 'Payslip PDF ready', {
-    pdfUrl: payslip.pdfUrl,
-    url: payslip.pdfUrl,
+    pdfUrl: absoluteUploadUrl(req, payslip.pdfUrl),
+    url: absoluteUploadUrl(req, payslip.pdfUrl),
   });
 });
 
@@ -211,12 +213,16 @@ const myPayrollSummary = asyncHandler(async (req, res) => {
     .limit(12);
   const latest = slips[0] ? payslipDto(slips[0]) : null;
   const ytdNet = slips.reduce((s, p) => s + (Number(p.netSalary) || 0), 0);
+  const nextSalaryDate = computeNextSalaryDate();
   return success(res, 200, 'Payroll summary', {
     summary: {
       latestNet: latest?.net || 0,
+      net: latest?.net || 0,
+      deductions: latest?.deductionsTotal || 0,
       latestMonth: latest?.month || null,
       ytdNet,
       payslipCount: slips.length,
+      nextSalaryDate,
     },
   });
 });

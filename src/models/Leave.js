@@ -52,7 +52,14 @@ const leaveRequestSchema = new mongoose.Schema(
     startDate: { type: Date, required: true },
     endDate: { type: Date, required: true },
     days: { type: Number, required: true },
+    halfDay: { type: Boolean, default: false },
     reason: { type: String, required: true },
+    attachment: {
+      url: String,
+      publicId: String,
+      originalName: String,
+      mimeType: String,
+    },
     status: {
       type: String,
       enum: ['pending', 'approved', 'rejected', 'cancelled'],

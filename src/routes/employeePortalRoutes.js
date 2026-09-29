@@ -9,6 +9,7 @@ import * as loanAdvanceController from '../controllers/loanAdvanceController.js'
 import * as attendanceRequestController from '../controllers/attendanceRequestController.js';
 import * as attendanceDynamic from '../controllers/attendanceDynamicController.js';
 import * as payrollController from '../controllers/payrollController.js';
+import * as supportTicketController from '../controllers/supportTicketController.js';
 import { protect, authorize } from '../middleware/auth.js';
 import upload, { avatarUpload } from '../middleware/upload.js';
 import validate from '../middleware/validate.js';
@@ -74,6 +75,22 @@ router.patch(
         return true;
       }),
     body('address').optional().isObject().withMessage('address must be an object'),
+    body('dateOfJoining')
+      .optional({ values: 'falsy' })
+      .custom((v) => {
+        if (Number.isNaN(new Date(v).getTime())) {
+          throw new Error('dateOfJoining must be a valid date');
+        }
+        return true;
+      }),
+    body('joinedAt')
+      .optional({ values: 'falsy' })
+      .custom((v) => {
+        if (Number.isNaN(new Date(v).getTime())) {
+          throw new Error('joinedAt must be a valid date');
+        }
+        return true;
+      }),
   ],
   validate,
   employeeProfileController.updateMyProfile
@@ -212,6 +229,12 @@ router.patch(
   employeePortalController.updateProfileSection
 );
 
+router.post(
+  '/onboarding/complete',
+  authorize(...STAFF_ROLES),
+  employeePortalController.completeOnboarding
+);
+
 /* ── Employee portal (employee role only) ─────────────────── */
 router.use(authorize(ROLES.EMPLOYEE));
 
@@ -226,8 +249,10 @@ router.patch(
   employeePortalController.updateTaskStatus
 );
 
+router.get('/leave/balance', employeePortalController.getLeaveBalance);
 router.post(
   '/leave',
+  upload.single('attachment'),
   [
     body('reason').trim().notEmpty().withMessage('reason is required'),
     body('leaveType').optional({ values: 'falsy' }).trim().isString(),
@@ -241,6 +266,7 @@ router.post(
   employeePortalController.createLeave
 );
 router.get('/leave', employeePortalController.listLeave);
+router.patch('/leave/:id/cancel', employeePortalController.cancelLeave);
 
 router.post(
   '/overtime',
@@ -267,6 +293,19 @@ router.post(
   employeePortalController.createExpense
 );
 router.get('/expenses', employeePortalController.listExpenses);
+
+/* ── Support tickets ──────────────────────────────────────── */
+router.post(
+  '/support/tickets',
+  [
+    body('subject').trim().notEmpty().withMessage('subject is required'),
+    body('message').trim().notEmpty().withMessage('message is required'),
+    body('category').optional({ values: 'falsy' }).trim().isString(),
+  ],
+  validate,
+  supportTicketController.createTicket
+);
+router.get('/support/tickets', supportTicketController.listMyTickets);
 
 /* ── Performance (self) ───────────────────────────────────── */
 router.get('/performance', employeePortalController.getMyPerformance);

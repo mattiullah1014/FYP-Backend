@@ -199,20 +199,61 @@ const countPendingApprovals = async (managerId, { orgWide = false } = {}) => {
 const isOrgWideAdmin = (req) =>
   Boolean(req.isAdminManagerBypass || req.user?.role === ROLES.ADMIN);
 
+const TEAM_EMP_SELECT =
+  'name email phone designation department employeeId isActive avatar avatarUrl photo';
+
 // --- Team ---
 const getTeam = asyncHandler(async (req, res) => {
+  // Admin: org-wide employee list (createTask already bypasses team checks)
+  if (isOrgWideAdmin(req)) {
+    const employees = await User.find({
+      role: ROLES.EMPLOYEE,
+      isDeleted: false,
+    })
+      .select(TEAM_EMP_SELECT)
+      .sort({ name: 1 });
+    const team = employees.map((e) => ({
+      assignmentId: null,
+      relationshipType: 'secondary',
+      employee: e,
+    }));
+    return success(res, 200, 'Team fetched', { team, teamSize: team.length });
+  }
+
   const links = await ManagerEmployeeAssignment.find({ manager: req.user._id })
-    .populate(
-      'employee',
-      'name email phone designation department employeeId isActive avatar avatarUrl photo'
-    )
+    .populate('employee', TEAM_EMP_SELECT)
     .sort({ relationshipType: 1, createdAt: -1 });
 
-  const team = links.map((l) => ({
-    assignmentId: l._id,
-    relationshipType: l.relationshipType,
-    employee: l.employee,
-  }));
+  const team = [];
+  const seen = new Set();
+
+  for (const l of links) {
+    if (!l.employee) continue;
+    const id = String(l.employee._id || l.employee);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    team.push({
+      assignmentId: l._id,
+      relationshipType: l.relationshipType,
+      employee: l.employee,
+    });
+  }
+
+  // Also include employees whose primary manager field points here
+  const direct = await User.find({
+    manager: req.user._id,
+    role: ROLES.EMPLOYEE,
+    isDeleted: false,
+    _id: { $nin: [...seen] },
+  }).select(TEAM_EMP_SELECT);
+
+  for (const e of direct) {
+    team.push({
+      assignmentId: null,
+      relationshipType: 'primary',
+      employee: e,
+    });
+  }
 
   return success(res, 200, 'Team fetched', { team, teamSize: team.length });
 });

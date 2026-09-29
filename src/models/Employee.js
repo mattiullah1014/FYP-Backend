@@ -90,6 +90,7 @@ const employeeSchema = new mongoose.Schema(
     assets: { type: [assetSchema], default: [] },
     documents: { type: [documentSchema], default: [] },
     joinedAt: { type: Date, default: Date.now },
+    onboardingComplete: { type: Boolean, default: false },
     status: {
       type: String,
       enum: ['Active', 'Inactive', 'Deleted'],

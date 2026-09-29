@@ -5,7 +5,7 @@ import Employee from '../models/Employee.js';
 import ManagerEmployeeAssignment from '../models/ManagerEmployeeAssignment.js';
 import Task from '../models/Task.js';
 import OvertimeRequest from '../models/OvertimeRequest.js';
-import { LeaveRequest } from '../models/Leave.js';
+import { LeaveRequest, LeaveBalance } from '../models/Leave.js';
 import ExpenseClaim from '../models/Expense.js';
 import { Announcement, Message } from '../models/Communication.js';
 import { Goal, PerformanceReview } from '../models/Performance.js';
@@ -24,6 +24,12 @@ import {
   profileCompletionSummary,
   syncProfileCompletionFromUser,
 } from '../utils/profileCompletion.js';
+import { computeNextSalaryDate } from '../utils/salaryDate.js';
+import { Payslip } from '../models/Payroll.js';
+import {
+  AttendanceCorrection,
+  WfhRequest,
+} from '../models/AttendanceRequest.js';
 
 const calcDays = (from, to) => {
   const start = new Date(from);
@@ -108,10 +114,15 @@ const createLeave = asyncHandler(async (req, res) => {
   }
 
   const leaveType = mapLeaveType(rawType);
-  const days =
+  const halfDay =
+    req.body.halfDay === true ||
+    String(req.body.halfDay || '').toLowerCase() === 'true';
+
+  let days =
     req.body.days != null && Number(req.body.days) > 0
       ? Number(req.body.days)
       : calcDays(from, to);
+  if (halfDay && days >= 1) days = 0.5;
 
   // Optional: primary manager if assigned (not required from client)
   const primary = await ManagerEmployeeAssignment.findOne({
@@ -126,6 +137,20 @@ const createLeave = asyncHandler(async (req, res) => {
   const managerId =
     req.body.managerId || primary?.manager || anyMgr?.manager || undefined;
 
+  let attachment;
+  if (req.file) {
+    const dir = path.join(UPLOADS_ROOT, 'leave');
+    await fs.mkdir(dir, { recursive: true });
+    const ext = path.extname(req.file.originalname || '') || '';
+    const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
+    await fs.writeFile(path.join(dir, filename), req.file.buffer);
+    attachment = {
+      url: `/uploads/leave/${filename}`,
+      originalName: req.file.originalname || filename,
+      mimeType: req.file.mimetype || '',
+    };
+  }
+
   const leave = await LeaveRequest.create({
     employee: req.user._id,
     manager: managerId,
@@ -133,7 +158,9 @@ const createLeave = asyncHandler(async (req, res) => {
     startDate: from,
     endDate: to,
     days,
+    halfDay,
     reason,
+    attachment,
     status: 'pending',
     managerStatus: 'pending',
     hrStatus: 'pending',
@@ -149,7 +176,12 @@ const createLeave = asyncHandler(async (req, res) => {
     includeHrAdmin: true,
   });
 
-  return success(res, 201, 'Leave request submitted', { leave });
+  const leaveObj = leave.toObject();
+  if (leaveObj.attachment?.url) {
+    leaveObj.attachment.url = absoluteUploadUrl(req, leaveObj.attachment.url);
+  }
+
+  return success(res, 201, 'Leave request submitted', { leave: leaveObj });
 });
 
 const listLeave = asyncHandler(async (req, res) => {
@@ -161,7 +193,97 @@ const listLeave = asyncHandler(async (req, res) => {
     .populate('manager', 'name email')
     .sort({ createdAt: -1 });
 
-  return success(res, 200, 'Leave requests fetched', { leaves });
+  const mapped = leaves.map((l) => {
+    const o = l.toObject();
+    if (o.attachment?.url) {
+      o.attachment.url = absoluteUploadUrl(req, o.attachment.url);
+    }
+    return o;
+  });
+
+  return success(res, 200, 'Leave requests fetched', { leaves: mapped });
+});
+
+/** GET /employee/leave/balance */
+const getLeaveBalance = asyncHandler(async (req, res) => {
+  const year = Number(req.query.year) || new Date().getFullYear();
+  const balances = await LeaveBalance.find({
+    employee: req.user._id,
+    year,
+  });
+
+  const paidTypes = new Set(['annual', 'sick', 'casual', 'maternity', 'paternity']);
+  let allocated = 0;
+  let used = 0;
+  let annualAllocated = 0;
+  let annualUsed = 0;
+  let paidAllocated = 0;
+  let paidUsed = 0;
+
+  for (const b of balances) {
+    const a = Number(b.allocated) || 0;
+    const u = Number(b.used) || 0;
+    allocated += a;
+    used += u;
+    const type = String(b.leaveType || '').toLowerCase();
+    if (type === 'annual') {
+      annualAllocated += a;
+      annualUsed += u;
+    }
+    if (paidTypes.has(type)) {
+      paidAllocated += a;
+      paidUsed += u;
+    }
+  }
+
+  // Fallback: if no balance rows, derive used from approved leave requests
+  if (!balances.length) {
+    const approved = await LeaveRequest.find({
+      employee: req.user._id,
+      status: 'approved',
+      startDate: {
+        $gte: new Date(`${year}-01-01`),
+        $lte: new Date(`${year}-12-31T23:59:59`),
+      },
+    }).select('leaveType days');
+    used = approved.reduce((s, r) => s + (Number(r.days) || 0), 0);
+    annualUsed = approved
+      .filter((r) => mapLeaveType(r.leaveType) === 'annual')
+      .reduce((s, r) => s + (Number(r.days) || 0), 0);
+    paidUsed = approved
+      .filter((r) => paidTypes.has(mapLeaveType(r.leaveType)))
+      .reduce((s, r) => s + (Number(r.days) || 0), 0);
+  }
+
+  const remaining = Math.max(0, allocated - used);
+  const paidRemaining = Math.max(0, paidAllocated - paidUsed);
+  const annualRemaining = Math.max(0, annualAllocated - annualUsed);
+
+  return success(res, 200, 'Leave balance fetched', {
+    balance: {
+      remaining,
+      paidRemaining,
+      annualRemaining,
+      allocated,
+      used,
+    },
+    balances,
+  });
+});
+
+/** PATCH /employee/leave/:id/cancel */
+const cancelLeave = asyncHandler(async (req, res) => {
+  const leave = await LeaveRequest.findOne({
+    _id: req.params.id,
+    employee: req.user._id,
+  });
+  if (!leave) throw new ApiError(404, 'Leave request not found');
+  if (leave.status !== 'pending') {
+    throw new ApiError(400, 'Only pending leave can be cancelled');
+  }
+  leave.status = 'cancelled';
+  await leave.save();
+  return success(res, 200, 'Leave cancelled', { leave });
 });
 
 const createOvertime = asyncHandler(async (req, res) => {
@@ -321,20 +443,39 @@ const updateProfileSection = asyncHandler(async (req, res) => {
     await user.save();
     doc.documentsComplete = Array.isArray(user.documents) && user.documents.length > 0;
   } else if (section === 'emergencyContact') {
+    let contact = null;
     if (req.body.emergencyContacts) {
       user.emergencyContacts = req.body.emergencyContacts;
+      contact = Array.isArray(req.body.emergencyContacts)
+        ? req.body.emergencyContacts[0]
+        : null;
+    } else if (req.body.emergencyContact) {
+      contact = req.body.emergencyContact;
+      user.emergencyContacts = [contact];
     } else if (req.body.name && req.body.phone) {
-      user.emergencyContacts = [
-        {
-          name: req.body.name,
-          relation: req.body.relation,
-          phone: req.body.phone,
-        },
-      ];
+      contact = {
+        name: req.body.name,
+        relation: req.body.relation,
+        phone: req.body.phone,
+      };
+      user.emergencyContacts = [contact];
     }
     await user.save();
     doc.emergencyContactComplete =
       Array.isArray(user.emergencyContacts) && user.emergencyContacts.length > 0;
+
+    // Keep Employee.emergencyContact in sync (source of truth for GET /profile)
+    if (contact) {
+      const employee = await Employee.findOne({ user: req.user._id });
+      if (employee) {
+        employee.emergencyContact = {
+          name: contact.name || '',
+          relation: contact.relation || '',
+          phone: contact.phone || '',
+        };
+        await employee.save();
+      }
+    }
   } else if (section === 'bankDetails') {
     const bankName = req.body.bankName || '';
     const accountNumber = req.body.accountNumber || '';
@@ -375,7 +516,15 @@ const dashboard = asyncHandler(async (req, res) => {
     department: l.manager?.department,
   }));
 
-  const [pendingTasks, announcements, alerts] = await Promise.all([
+  const year = new Date().getFullYear();
+  const [
+    pendingTasks,
+    announcements,
+    alerts,
+    leaveBalances,
+    latestPayslip,
+    pendingAttendanceRequests,
+  ] = await Promise.all([
     Task.countDocuments({
       assignee: req.user._id,
       isDeleted: false,
@@ -392,20 +541,104 @@ const dashboard = asyncHandler(async (req, res) => {
     Message.find({ recipient: req.user._id, isRead: false })
       .sort({ createdAt: -1 })
       .limit(20),
+    LeaveBalance.find({ employee: req.user._id, year }),
+    Payslip.findOne({ employee: req.user._id }).sort({ year: -1, month: -1 }),
+    Promise.all([
+      AttendanceCorrection.countDocuments({
+        employee: req.user._id,
+        status: 'pending',
+      }),
+      WfhRequest.countDocuments({
+        employee: req.user._id,
+        status: { $in: ['pending', 'pending_manager', 'pending_hr'] },
+      }),
+    ]).then(([a, b]) => a + b),
   ]);
 
   await syncProfileCompletionFromUser(req.user._id);
   const completion = await getOrCreateProfileCompletion(req.user._id);
 
+  const allocated = leaveBalances.reduce(
+    (s, b) => s + (Number(b.allocated) || 0),
+    0
+  );
+  const used = leaveBalances.reduce((s, b) => s + (Number(b.used) || 0), 0);
+  const leaveBalance = Math.max(0, allocated - used);
+  const nextSalaryDate = computeNextSalaryDate();
+
   return success(res, 200, 'Employee dashboard', {
     dashboard: {
       managers,
       pendingTasks,
+      pendingAttendanceRequests,
       announcements,
       alerts,
+      nextSalaryDate,
+      leaveBalance,
+      netPay: latestPayslip ? Number(latestPayslip.netSalary) || 0 : 0,
       profileCompletion: profileCompletionSummary(completion),
       incomplete: getIncompleteSections(completion),
     },
+  });
+});
+
+/** POST /employee/onboarding/complete */
+const completeOnboarding = asyncHandler(async (req, res) => {
+  const employee = await Employee.findOne({ user: req.user._id });
+  if (!employee) throw new ApiError(404, 'Employee profile not found');
+
+  const body = req.body || {};
+
+  if (body.phone) {
+    employee.phone = String(body.phone).trim();
+    req.user.phone = employee.phone;
+  }
+  if (body.department !== undefined) {
+    employee.department = String(body.department).trim();
+  }
+  if (body.designation !== undefined) {
+    employee.designation = String(body.designation).trim();
+    req.user.designation = employee.designation;
+  }
+  if (body.branch !== undefined) {
+    employee.branch = String(body.branch).trim();
+  }
+  if (body.dateOfJoining) {
+    const d = new Date(body.dateOfJoining);
+    if (Number.isNaN(d.getTime())) {
+      throw new ApiError(400, 'dateOfJoining must be a valid date');
+    }
+    employee.joinedAt = d;
+    req.user.dateOfJoining = d;
+  }
+  if (body.address && typeof body.address === 'object') {
+    employee.address = { ...(employee.address?.toObject?.() || employee.address || {}), ...body.address };
+    req.user.address = employee.address;
+  }
+  if (body.emergencyContact && typeof body.emergencyContact === 'object') {
+    employee.emergencyContact = {
+      name: body.emergencyContact.name || '',
+      relation: body.emergencyContact.relation || '',
+      phone: body.emergencyContact.phone || '',
+    };
+    req.user.emergencyContacts = [employee.emergencyContact];
+  }
+  if (body.bank && typeof body.bank === 'object') {
+    employee.bank = {
+      bankName: body.bank.bankName || '',
+      accountNumber: body.bank.accountNumber || '',
+      iban: body.bank.iban || '',
+    };
+  }
+
+  employee.onboardingComplete = true;
+  await employee.save();
+  await req.user.save();
+  await syncProfileCompletionFromUser(req.user._id);
+
+  return success(res, 200, 'Onboarding completed', {
+    onboardingComplete: true,
+    employeeId: String(employee._id),
   });
 });
 
@@ -547,6 +780,8 @@ export {
   updateTaskStatus,
   createLeave,
   listLeave,
+  getLeaveBalance,
+  cancelLeave,
   createOvertime,
   listOvertime,
   createExpense,
@@ -554,6 +789,7 @@ export {
   profileCompletion,
   updateProfileSection,
   dashboard,
+  completeOnboarding,
   getMyPerformance,
   submitSelfAssessment,
 };
